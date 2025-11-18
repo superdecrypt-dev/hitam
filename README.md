@@ -24,3 +24,13 @@ Jalankan perintah berikut di terminal VPS Anda sebagai **root**:
 apt update && apt install -y wget curl && wget -q https://raw.githubusercontent.com/superdecrypt-dev/hitam/main/setup.sh && chmod +x setup.sh && ./setup.sh
 ```
 **_Catatan: fitur auto expired belum tersedia, jadi hapus akun manual yang sudah expired_**
+
+## 📸 Screenshots
+
+![1](images/menu.png)
+![2](images/menu.png)
+![3](images/menu.png)
+![4](images/menu.png)
+![5](images/menu.png)
+![6](images/menu.png)
+![7](images/menu.png)
