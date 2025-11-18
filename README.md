@@ -8,7 +8,7 @@ Script auto-installer untuk membangun server Xray dengan dukungan multi-protokol
 * **Koneksi:** WebSocket (WS) pada Port 443 (SSL/TLS) dan Port 80 (Non-TLS).
 * **Keamanan:** Auto SSL via Acme.sh (LetsEncrypt/ZeroSSL).
 * **Routing:** Integrasi **Cloudflare WARP** (via Wireproxy) untuk bypass limitasi/IP.
-* **Manajemen:** Menu CLI (`menu`) untuk buat, hapus, perpanjang akun, dan cek trafik.
+* **Manajemen:** Menu CLI (`menu`) untuk buat, hapus, perpanjang akun, dll.
 * **Domain:** Mendukung Domain Sendiri atau Auto-Subdomain (menggunakan API Cloudflare).
 
 ## 📋 Persyaratan Sistem
@@ -21,7 +21,6 @@ Script auto-installer untuk membangun server Xray dengan dukungan multi-protokol
 Jalankan perintah berikut di terminal VPS Anda sebagai **root**:
 
 ```bash
-apt update && apt install -y wget curl
-wget -q [https://raw.githubusercontent.com/USERNAME_GITHUB_ANDA/NAMA_REPO_ANDA/main/xray_nginx_installer.sh](https://raw.githubusercontent.com/USERNAME_GITHUB_ANDA/NAMA_REPO_ANDA/main/xray_nginx_installer.sh)
-chmod +x xray_nginx_installer.sh
-./xray_nginx_installer.sh
+apt update && apt install -y wget curl && wget -q https://raw.githubusercontent.com/superdecrypt-dev/hitam/main/setup.sh && chmod +x setup.sh && ./setup.sh
+```
+**_Catatan: fitur auto expired belum tersedia, jadi hapus akun manual yang sudah expired_**
