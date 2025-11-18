@@ -27,10 +27,10 @@ apt update && apt install -y wget curl && wget -q https://raw.githubusercontent.
 
 ## 📸 Screenshots
 
-![1](images/menu.png)
-![2](images/menu.png)
-![3](images/menu.png)
-![4](images/menu.png)
-![5](images/menu.png)
-![6](images/menu.png)
-![7](images/menu.png)
+![1](https://raw.githubusercontent.com/superdecrypt-dev/hitam/main/1.png)
+![2](https://raw.githubusercontent.com/superdecrypt-dev/hitam/main/2.jpg)
+![3](https://raw.githubusercontent.com/superdecrypt-dev/hitam/main/3.png)
+![4](https://raw.githubusercontent.com/superdecrypt-dev/hitam/main/4.jpg)
+![5](https://raw.githubusercontent.com/superdecrypt-dev/hitam/main/5.png)
+![6](https://raw.githubusercontent.com/superdecrypt-dev/hitam/main/6.png)
+![7](https://raw.githubusercontent.com/superdecrypt-dev/hitam/main/7.png)
