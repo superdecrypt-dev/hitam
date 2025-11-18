@@ -2,7 +2,7 @@
 
 # ======================================================================
 # Skrip Instalasi Xray-core & Nginx (Auto DNS Cloudflare + Validasi)
-# Versi 4.6 (Deteksi Versi WireProxy via API)
+# Versi 4.8
 # ======================================================================
 
 # --- Variabel Warna (Diperluas) ---
@@ -27,11 +27,14 @@ B_CYAN="${ESC}1;36m"
 B_WHITE="${ESC}1;37m"
 
 # --- Konfigurasi Cloudflare ---
-CF_TOKEN="qz31v4icXAb7593V_cafEHPEvskw5V8rWES95AZx" # <-- DIPERBARUI
+CF_TOKEN="qz31v4icXAb7593V_cafEHPEvskw5V8rWES95AZx" 
 DOMAIN_OPT_1="vip01.qzz.io"
 DOMAIN_OPT_2="vip02.qzz.io"
-DOMAIN_OPT_3="vip03.qzz.io" # <-- DITAMBAHKAN
-DOMAIN_OPT_4="vip04.qzz.io" # <-- DITAMBAHKAN
+DOMAIN_OPT_3="vip03.qzz.io"
+DOMAIN_OPT_4="vip04.qzz.io"
+
+# --- KONFIGURASI SUMBER MENU (GITHUB) ---
+MENU_URL="https://raw.githubusercontent.com/superdecrypt-dev/hitam/main/menu.sh"
 
 # --- Log File ---
 LOG_FILE="/tmp/xray_install.log"
@@ -69,7 +72,7 @@ print_header() {
 print_banner() {
     clear
     local title="Skrip Instalasi Xray-core & Nginx"
-    local subtitle="Versi 4.6 (Integrasi WARP - Fixed)"
+    local subtitle="Versi 4.8 (UI Rapi)"
     
     print_line "=" "$B_GREEN"
     echo -e "\n"
@@ -300,18 +303,18 @@ get_domain_menu() {
                     echo -e "${B_WHITE}Pilih Domain Induk:${RESET}\n"
                     print_menu_option "A." "${DOMAIN_OPT_1}"
                     print_menu_option "B." "${DOMAIN_OPT_2}"
-                    print_menu_option "C." "${DOMAIN_OPT_3}" # <-- DIPERBARUI
-                    print_menu_option "D." "${DOMAIN_OPT_4}" # <-- DIPERBARUI
+                    print_menu_option "C." "${DOMAIN_OPT_3}"
+                    print_menu_option "D." "${DOMAIN_OPT_4}"
                     echo -e "\n"
                     print_menu_option "K." "Kembali ke Menu Utama"
                     
-                    print_menu_prompt "Pilih (A/B/C/D/K)" CF_DOMAIN_OPT # <-- DIPERBARUI
+                    print_menu_prompt "Pilih (A/B/C/D/K)" CF_DOMAIN_OPT
         
                     if   [[ "$CF_DOMAIN_OPT" == [Kk] ]]; then break
                     elif [[ "$CF_DOMAIN_OPT" == [Aa] ]]; then SELECTED_ZONE=$DOMAIN_OPT_1
                     elif [[ "$CF_DOMAIN_OPT" == [Bb] ]]; then SELECTED_ZONE=$DOMAIN_OPT_2
-                    elif [[ "$CF_DOMAIN_OPT" == [Cc] ]]; then SELECTED_ZONE=$DOMAIN_OPT_3 # <-- DIPERBARUI
-                    elif [[ "$CF_DOMAIN_OPT" == [Dd] ]]; then SELECTED_ZONE=$DOMAIN_OPT_4 # <-- DIPERBARUI
+                    elif [[ "$CF_DOMAIN_OPT" == [Cc] ]]; then SELECTED_ZONE=$DOMAIN_OPT_3
+                    elif [[ "$CF_DOMAIN_OPT" == [Dd] ]]; then SELECTED_ZONE=$DOMAIN_OPT_4
                     else print_error "Pilihan tidak valid."; sleep 1; continue; fi
         
                     print_info "Domain Induk dipilih: ${B_YELLOW}${SELECTED_ZONE}${RESET}"
@@ -572,10 +575,6 @@ EOF
     run_task "Enable service Xray" "systemctl enable xray"
 }
 
-# ==========================================================
-# PERUBAHAN: Fungsi install_warp_tools
-# Mendeteksi versi WireProxy dari API GitHub SEBELUM download
-# ==========================================================
 install_warp_tools() {
     print_info "Mendeteksi arsitektur untuk WARP tools..."
     local ARCH_WGCF
@@ -608,19 +607,16 @@ install_warp_tools() {
     run_task "Download wgcf" "curl -L -o /usr/local/bin/wgcf https://github.com/ViRb3/wgcf/releases/download/${WGCF_LATEST}/wgcf_${WGCF_LATEST#v}_linux_${ARCH_WGCF}"
     run_task "Set executable wgcf" "chmod +x /usr/local/bin/wgcf"
 
-    # 2. Install wireproxy (PERBAIKAN DI SINI)
-    # <-- FITUR BARU: Deteksi versi WireProxy dari API
+    # 2. Install wireproxy
     WP_LATEST=$(curl -s "https://api.github.com/repos/whyvl/wireproxy/releases/latest" | jq -r .tag_name)
     if [[ -z "$WP_LATEST" || "$WP_LATEST" == "null" ]]; then
         print_warn "Gagal deteksi rilis wireproxy, menggunakan v1.0.9 (fallback)."
-        WP_LATEST="v1.0.9" # Fallback ke versi stabil
+        WP_LATEST="v1.0.9"
     fi
-    WP_VERSION_INSTALLED=$WP_LATEST # <-- Simpan versi SEBELUM download
-    print_info "Mengunduh wireproxy ${WP_LATEST}..." # <-- Tampilkan versi
-    # <-- AKHIR FITUR BARU
+    WP_VERSION_INSTALLED=$WP_LATEST
+    print_info "Mengunduh wireproxy ${WP_LATEST}..."
     
     local WP_FILENAME="wireproxy_linux_${ARCH_WP}.tar.gz"
-    # <-- PERUBAHAN: Gunakan $WP_LATEST di URL, bukan /latest/
     local WP_DOWNLOAD_URL="https://github.com/whyvl/wireproxy/releases/download/${WP_LATEST}/${WP_FILENAME}"
     
     cd /tmp
@@ -628,16 +624,9 @@ install_warp_tools() {
     run_task "Ekstrak wireproxy" "tar -xzf ${WP_FILENAME}"
     run_task "Install wireproxy" "mv -f wireproxy /usr/local/bin/wireproxy"
     run_task "Set executable wireproxy" "chmod +x /usr/local/bin/wireproxy"
-    
-    # <-- DIHAPUS: Deteksi versi setelah instalasi (sudah tidak perlu)
-    
     run_task "Bersihkan sisa download" "rm -f ${WP_FILENAME}"
     cd - > /dev/null
 }
-# ==========================================================
-# AKHIR PERUBAHAN
-# ==========================================================
-
 
 # --- 8. Konfigurasi WireProxy ---
 setup_wireproxy_config() {
@@ -1079,6 +1068,38 @@ start_services() {
     run_task "Restart Xray" "systemctl restart xray"
 }
 
+install_menu_script() {
+    print_header "Langkah 11: Instalasi Skrip Menu"
+
+    # 1. Cek apakah URL sudah diganti
+    if [[ "$MENU_URL" == *"username/repo"* ]]; then
+        print_warn "Variabel MENU_URL belum diubah di script installer!"
+        print_warn "Melewati download menu. Silakan download manual nanti."
+        return
+    fi
+
+    # 2. Download Script dengan Spinner (Hidden Output)
+    # Menggunakan 'curl -sL' agar silent, output error tetap tertangkap log via run_task
+    if run_task "Mengunduh skrip menu dari repository" "curl -sL -o /usr/local/bin/menu \"$MENU_URL\""; then
+        
+        run_task "Mengatur izin eksekusi" "chmod +x /usr/local/bin/menu"
+        
+        # 3. Sinkronisasi Config
+        print_info "Melakukan sinkronisasi konfigurasi ke menu..."
+        
+        # Sinkronisasi Token Cloudflare
+        sed -i "s|CF_TOKEN=\".*\"|CF_TOKEN=\"$CF_TOKEN\"|g" /usr/local/bin/menu
+        
+        # Sinkronisasi Domain Tersedia
+        local new_domains="(\"$DOMAIN_OPT_1\" \"$DOMAIN_OPT_2\" \"$DOMAIN_OPT_3\" \"$DOMAIN_OPT_4\")"
+        sed -i "s|AVAILABLE_DOMAINS=(.*)|AVAILABLE_DOMAINS=$new_domains|g" /usr/local/bin/menu
+        
+        print_info "Menu berhasil disinkronisasi dan siap digunakan."
+    else
+        print_error "Gagal mengunduh skrip menu. Cek koneksi atau URL (lihat log)."
+    fi
+}
+
 # --- 12. Ringkasan ---
 show_summary() {
     echo -e "\n"
@@ -1102,10 +1123,12 @@ show_summary() {
     echo -e "  ${B_WHITE}Semua koneksi menggunakan port ${B_GREEN}443 (SSL/TLS)${RESET} ${B_WHITE}dan${B_WHITE} ${B_GREEN}80 (HTTP)${RESET}."
     print_line "-" "$GREEN"
     
-    echo -e "  ${B_WHITE}Versi Terinstal:${RESET}"
-    echo -e "    - ${CYAN}Xray-Core:${RESET}    ${XRAY_VERSION_INSTALLED}"
-    echo -e "    - ${CYAN}wgcf:${RESET}         ${WGCF_VERSION_INSTALLED}"
-    echo -e "    - ${CYAN}WireProxy:${RESET}    ${WP_VERSION_INSTALLED}"
+    echo -e "  ${B_WHITE}Akses Menu:${RESET}"
+    if [[ -x /usr/local/bin/menu ]]; then
+        echo -e "    - Ketik perintah ${B_GREEN}menu${RESET} untuk mengelola akun & domain."
+    else
+        echo -e "    - Script menu belum terunduh (cek URL di installer)."
+    fi
     
     print_line "=" "$B_GREEN"
 }
@@ -1147,6 +1170,9 @@ main() {
     print_header "Langkah 10: Menjalankan Layanan"
     start_services
     
+    # LANGKAH BARU
+    install_menu_script
+    
     show_summary
 
     echo -e "\n${B_GREEN}Semua langkah telah selesai!${RESET}\n"
@@ -1154,4 +1180,5 @@ main() {
 
 # Jalankan fungsi main
 main
+
 
