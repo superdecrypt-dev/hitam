@@ -2,7 +2,7 @@
 
 # ======================================================================
 # Skrip Instalasi Xray-core & Nginx (Auto DNS Cloudflare + Validasi)
-# Versi 4.8
+# Versi 4.9 (Added: Auto Delete Expired Account / XP Script)
 # ======================================================================
 
 # --- Variabel Warna (Diperluas) ---
@@ -34,6 +34,7 @@ DOMAIN_OPT_3="vip03.qzz.io"
 DOMAIN_OPT_4="vip04.qzz.io"
 
 # --- KONFIGURASI SUMBER MENU (GITHUB) ---
+# PENTING: Ganti URL ini dengan URL RAW file xray_menu.sh dari repo Github Anda
 MENU_URL="https://raw.githubusercontent.com/superdecrypt-dev/hitam/main/menu.sh"
 
 # --- Log File ---
@@ -72,7 +73,7 @@ print_header() {
 print_banner() {
     clear
     local title="Skrip Instalasi Xray-core & Nginx"
-    local subtitle="Versi 4.8 (UI Rapi)"
+    local subtitle="Versi 4.9 (Auto Delete Expired)"
     
     print_line "=" "$B_GREEN"
     echo -e "\n"
@@ -162,7 +163,7 @@ validate_os() {
 # --- 3. Instal Dependensi ---
 install_dependencies() {
     run_task "Update repositori paket" "apt update -y"
-    run_task "Install paket (curl, jq, dll)" "apt install -y curl wget socat lsof unzip git jq openssl"
+    run_task "Install paket (curl, jq, cron, dll)" "apt install -y curl wget socat lsof unzip git jq openssl cron"
 }
 
 # --- Cloudflare Handler ---
@@ -575,6 +576,10 @@ EOF
     run_task "Enable service Xray" "systemctl enable xray"
 }
 
+# ==========================================================
+# PERUBAHAN: Fungsi install_warp_tools
+# Mendeteksi versi WireProxy dari API GitHub SEBELUM download
+# ==========================================================
 install_warp_tools() {
     print_info "Mendeteksi arsitektur untuk WARP tools..."
     local ARCH_WGCF
@@ -1068,6 +1073,9 @@ start_services() {
     run_task "Restart Xray" "systemctl restart xray"
 }
 
+# ==========================================================
+# FITUR BARU: Install Menu Script & Sinkronisasi Config
+# ==========================================================
 install_menu_script() {
     print_header "Langkah 11: Instalasi Skrip Menu"
 
@@ -1100,6 +1108,135 @@ install_menu_script() {
     fi
 }
 
+# ==========================================================
+# FITUR BARU: Install Auto-Delete Expired Accounts (xp)
+# ==========================================================
+install_autoxp() {
+    print_header "Langkah 12: Setup Auto-Delete (XP)"
+    
+    print_info "Membuat script pembersih otomatis (/usr/local/bin/xp)..."
+
+cat << 'EOF' > /usr/local/bin/xp
+#!/bin/bash
+# Xray Auto Delete Expired Account Script
+# Dijalankan oleh Cron setiap malam
+
+CONFIG="/usr/local/etc/xray/config.json"
+ACCOUNTS_DIR="/usr/local/etc/xray/accounts"
+LOG_FILE="/var/log/xray/xp.log"
+
+# Fungsi Hapus Client Standar (VMess/VLESS/Trojan/SS)
+del_client_std() { 
+    local proto="$1"
+    local user="$2"
+    local tmp="$CONFIG.tmp.$$"
+    # Hapus berdasarkan email
+    if jq --arg p "$proto" --arg user "$user" \
+       '(.inbounds[] | select(.protocol==$p) | .settings.clients) |= ( [ .[] | select(.email != $user) ] )' \
+       "$CONFIG" > "$tmp"; then
+       mv "$tmp" "$CONFIG"
+    else
+       rm -f "$tmp"
+    fi
+}
+
+# Fungsi Hapus Client Akun (HTTP/SOCKS)
+del_client_acct() { 
+    local proto="$1"
+    local user="$2"
+    local tmp="$CONFIG.tmp.$$"
+    # Hapus berdasarkan user
+    if jq --arg p "$proto" --arg user "$user" \
+       '(.inbounds[] | select(.protocol==$p) | .settings.accounts) |= ( [ .[] | select(.user != $user) ] )' \
+       "$CONFIG" > "$tmp"; then
+       mv "$tmp" "$CONFIG"
+    else
+       rm -f "$tmp"
+    fi
+}
+
+# Log Function
+log_xp() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+}
+
+# --- MAIN LOGIC ---
+RESTART_NEEDED=0
+TODAY_TS=$(date +%s)
+
+# Loop semua protokol
+for proto in vmess vless trojan shadowsocks http socks; do
+    DB_FILE="$ACCOUNTS_DIR/$proto.db"
+    
+    if [[ -f "$DB_FILE" ]]; then
+        # Baca file DB line by line
+        # Format: user|secret|expired|created
+        while IFS='|' read -r user secret exp created; do
+            if [[ -z "$user" ]]; then continue; fi
+            
+            # Convert Expired Date ke Timestamp
+            EXP_TS=$(date -d "$exp" +%s 2>/dev/null)
+            
+            # Jika tanggal tidak valid, skip (atau anggap expired, tergantung kebijakan)
+            if [[ -z "$EXP_TS" ]]; then continue; fi
+
+            # Cek apakah Expired < Hari Ini
+            if [[ $EXP_TS -lt $TODAY_TS ]]; then
+                log_xp "Menghapus akun EXPIRED: $user ($proto) - Exp: $exp"
+                
+                # 1. Hapus dari Config JSON
+                case "$proto" in
+                    vmess|vless|trojan|shadowsocks) del_client_std "$proto" "$user" ;;
+                    http|socks) del_client_acct "$proto" "$user" ;;
+                esac
+                
+                # 2. Hapus file detail (.txt)
+                rm -f "$ACCOUNTS_DIR/$proto/$user-$proto.txt"
+                
+                # 3. Tandai user untuk dihapus dari DB (nanti diproses sed)
+                # Kita tidak bisa hapus baris saat sedang membaca file yang sama dalam loop
+                # Jadi kita simpan user ke array atau file temp, 
+                # TAPI cara simpel: grep -v langsung ke file tmp untuk db
+                
+                # Flag restart
+                RESTART_NEEDED=1
+            fi
+        done < "$DB_FILE"
+
+        # Pembersihan DB Fisik (Menghapus baris expired dari file DB)
+        # Logic: Baca ulang, keep hanya yang EXP >= TODAY
+        cat "$DB_FILE" | while IFS='|' read -r u s e c; do
+            ets=$(date -d "$e" +%s 2>/dev/null)
+            if [[ -n "$ets" && $ets -ge $TODAY_TS ]]; then
+                echo "$u|$s|$e|$c"
+            fi
+        done > "$DB_FILE.tmp"
+        mv "$DB_FILE.tmp" "$DB_FILE"
+    fi
+done
+
+# Restart Service jika ada perubahan
+if [[ $RESTART_NEEDED -eq 1 ]]; then
+    log_xp "Merestart layanan Xray..."
+    systemctl restart xray
+    log_xp "Pembersihan selesai."
+else
+    # Optional: log jika tidak ada aktivitas
+    # log_xp "Tidak ada akun expired hari ini."
+    :
+fi
+EOF
+
+    run_task "Set permission script XP" "chmod +x /usr/local/bin/xp"
+    
+    print_info "Menambahkan Cronjob (Jalan setiap jam 00:00)..."
+    # Hapus cron lama jika ada, lalu tambah yang baru
+    (crontab -l 2>/dev/null | grep -v "/usr/local/bin/xp"; echo "0 0 * * * /usr/local/bin/xp") | crontab -
+    
+    run_task "Restart service cron" "systemctl restart cron"
+    print_info "Auto-delete berhasil dijadwalkan."
+}
+
 # --- 12. Ringkasan ---
 show_summary() {
     echo -e "\n"
@@ -1129,6 +1266,10 @@ show_summary() {
     else
         echo -e "    - Script menu belum terunduh (cek URL di installer)."
     fi
+    
+    echo -e "  ${B_WHITE}Auto-Delete (XP):${RESET}"
+    echo -e "    - Berjalan otomatis setiap jam ${B_GREEN}00:00${RESET}."
+    echo -e "    - Log aktivitas: ${B_YELLOW}/var/log/xray/xp.log${RESET}"
     
     print_line "=" "$B_GREEN"
 }
@@ -1170,8 +1311,11 @@ main() {
     print_header "Langkah 10: Menjalankan Layanan"
     start_services
     
-    # LANGKAH BARU
+    # LANGKAH MENU
     install_menu_script
+    
+    # LANGKAH AUTO-DELETE (XP)
+    install_autoxp
     
     show_summary
 
