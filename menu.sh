@@ -893,6 +893,10 @@ aksi_buat(){
   fi
 
   print_menu_prompt "Masa aktif (hari, default 30)" days; days="${days:-30}"
+  while [[ ! "$days" =~ ^[0-9]+$ ]]; do
+    print_error "Input harus angka!"
+    print_menu_prompt "Masa aktif (hari)" days
+  done
   
   domain="$(get_domain)"; path="$(get_ws_path "$proto")"
   if [[ -z "$path" ]]; then
