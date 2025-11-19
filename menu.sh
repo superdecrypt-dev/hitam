@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Xray Management Menu (VMess/VLESS/Trojan/SS/HTTP/SOCKS)
-# Versi 3.5 (Xray Multi Protokol + Routing WARP)
+# Versi 3.6 (Fix: Hide System Users in Routing)
 
 # Gunakan set +e agar script tidak mati jika ada command error (penting untuk ux)
 set +e
@@ -71,7 +71,7 @@ print_banner() {
     clear
     local title="Manajemen Xray-core"
     # --- PERUBAHAN VERSI ---
-    local subtitle="Versi UI 3.5 (Xray Multi Protokol + Routing WARP)"
+    local subtitle="Versi UI 3.6 (Xray Multi Protokol + Routing WARP)"
     
     print_line "=" "$B_GREEN"
     print_center "$title" "$B_GREEN"
@@ -1542,8 +1542,9 @@ rute_blokir_akun() {
   
   # Ambil SEMUA user dari aturan
   local rule_users_all_json=$(jq -r '(.routing.rules[] | select(.outboundTag == "blocked" and .user != null) | .user) // []' "$CONFIG")
-  # Filter user default "user2" HANYA untuk tampilan
-  local rule_users_display=$(echo "$rule_users_all_json" | jq -r '[.[] | select(. != "user2")] | .[]')
+  
+  # --- UPDATE DISINI: Filter "user2" DAN "quota" dari tampilan ---
+  local rule_users_display=$(echo "$rule_users_all_json" | jq -r '[.[] | select(. != "user2" and . != "quota")] | .[]')
   
   # Siapkan list untuk 3 kolom
   local users_tersedia_proto=""
@@ -1608,8 +1609,9 @@ rute_blokir_akun() {
       if [[ "$user_hapus" == "0" ]]; then return 0; fi
       if [[ -z "$user_hapus" ]]; then print_error "Input tidak boleh kosong."; pause_for_enter; return 1; fi
 
-      if [[ "$user_hapus" == "user2" ]]; then
-          print_error "User default 'user2' tidak dapat dihapus dari daftar blokir."
+      # --- UPDATE DISINI: Tambahkan "quota" ke proteksi agar tidak dihapus manual ---
+      if [[ "$user_hapus" == "user2" || "$user_hapus" == "quota" ]]; then
+          print_error "User system '$user_hapus' tidak dapat dihapus dari daftar blokir."
           pause_for_enter
           return 1
       fi
@@ -2041,5 +2043,4 @@ need_root
 need_cmd jq awk sed grep systemctl nginx date base64 curl openssl paste comm mktemp uptime free numfmt
 ensure_dirs
 main_menu
-
 
