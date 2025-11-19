@@ -2,7 +2,7 @@
 
 # ======================================================================
 # Skrip Instalasi Xray-core & Nginx (Auto DNS Cloudflare + Validasi)
-# Versi 4.9 (Added: Auto Delete Expired Account / XP Script)
+# Versi 5.0 (Added: Clean Start / Auto Delete Expired Account)
 # ======================================================================
 
 # --- Variabel Warna (Diperluas) ---
@@ -73,7 +73,7 @@ print_header() {
 print_banner() {
     clear
     local title="Skrip Instalasi Xray-core & Nginx"
-    local subtitle="Versi 4.9 (Auto Delete Expired)"
+    local subtitle="Versi 5.0 (Clean Install & Auto Delete)"
     
     print_line "=" "$B_GREEN"
     echo -e "\n"
@@ -158,6 +158,25 @@ validate_os() {
         print_error "Tidak dapat memvalidasi OS."
         exit 1
     fi
+}
+
+# --- 2b. Clean Up Previous Install (BARU) ---
+cleanup_previous_state() {
+    print_info "Memeriksa sisa instalasi sebelumnya..."
+    
+    if [[ -d "/usr/local/etc/xray" ]]; then
+        if [[ "$(ls -A /usr/local/etc/xray)" ]]; then
+            print_warn "Ditemukan file lama di /usr/local/etc/xray."
+            run_task "Menghapus konfigurasi Xray lama" "rm -rf /usr/local/etc/xray/*"
+        else
+            print_info "Direktori konfigurasi sudah bersih."
+        fi
+    else
+        print_info "Direktori baru akan dibuat."
+    fi
+    
+    # Pastikan direktori ada dan kosong
+    mkdir -p /usr/local/etc/xray
 }
 
 # --- 3. Instal Dependensi ---
@@ -259,6 +278,7 @@ update_cloudflare_dns() {
 
 # --- Menu Domain ---
 get_domain_menu() {
+    # Pastikan direktori ada (redundant safe check)
     mkdir -p /usr/local/etc/xray
     
     while true; do
@@ -955,6 +975,13 @@ generate_configs() {
         ]
       },
       {
+        "outboundTag": "blocked",
+        "type": "field",
+        "user": [
+          "quota"
+        ]
+      },
+      {
         "domain": [
           "geosite:apple",
           "geosite:meta",
@@ -1281,6 +1308,11 @@ main() {
     check_root
     validate_os
     
+    # --- NEW: Cleanup Step ---
+    print_header "Langkah Awal: Pembersihan Sistem"
+    cleanup_previous_state
+    # -------------------------
+    
     print_header "Langkah 1: Instalasi Dependensi Sistem"
     install_dependencies
     
@@ -1324,5 +1356,4 @@ main() {
 
 # Jalankan fungsi main
 main
-
 
