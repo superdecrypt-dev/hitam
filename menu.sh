@@ -158,29 +158,72 @@ get_service_status() {
     fi
 }
 
+# Deteksi interface utama (default route) secara otomatis
+detect_main_interface() {
+    local iface=""
+
+    # 1. Coba pakai ip route (paling akurat)
+    if command -v ip >/dev/null 2>&1; then
+        iface=$(ip route get 1.1.1.1 2>/dev/null | awk '
+            /dev/ {
+                for (i = 1; i <= NF; i++) {
+                    if ($i == "dev") { print $(i+1); exit }
+                }
+            }')
+
+        # fallback: default route biasa
+        if [[ -z "$iface" ]]; then
+            iface=$(ip route show default 2>/dev/null | awk '
+                /default/ {
+                    for (i = 1; i <= NF; i++) {
+                        if ($i == "dev") { print $(i+1); exit }
+                    }
+                }')
+        fi
+    fi
+
+    # 2. Kalau ip nggak ada / gagal, ambil interface pertama selain lo
+    if [[ -z "$iface" && -d /sys/class/net ]]; then
+        iface=$(ls /sys/class/net 2>/dev/null | awk '$1 != "lo" {print; exit}')
+    fi
+
+    # 3. Last resort, pakai eth0
+    echo "${iface:-eth0}"
+}
+
 # --- PERBAIKAN: Fungsi ambil trafik (gabungan in/out) ---
 get_xray_total_traffic() {
-    if [[ ! -x "$XRAY_BIN" ]]; then echo "Xray T/A"; return; fi
-    local APIDATA
-    APIDATA=$("$XRAY_BIN" api statsquery --server="$XRAY_API_SERVER" 2>/dev/null | \
-        awk '{
-            if (match($1, /"name":/)) {
-                f=1; gsub(/^"|link"|,$/, "", $2);
-                split($2, p,  ">>>");
-                printf "%s:%s->%s\t", p[1],p[2],p[4];
-            }
-            else if (match($1, /"value":/) && f){
-              f = 0; gsub(/"/, "", $2); printf "%.0f\n", $2;
-            }
-            else if (match($0, /}/) && f) { f = 0; print 0; }
-        }')
-    
-    if [[ -z "$APIDATA" ]]; then echo "API Error"; return; fi
-    local TOTAL_UP=$(echo "$APIDATA" | grep -E "^(inbound|outbound)" | grep -- '->up' | awk '{sum+=$2} END {printf "%.0f", sum}')
-    local TOTAL_DOWN=$(echo "$APIDATA" | grep -E "^(inbound|outbound)" | grep -- '->down' | awk '{sum+=$2} END {printf "%.0f", sum}')
-    local UP_FMT=$(echo "$TOTAL_UP" | numfmt --suffix=B --to=iec)
-    local DOWN_FMT=$(echo "$TOTAL_DOWN" | numfmt --suffix=B --to=iec)
-    echo -e "${B_GREEN}▲ $UP_FMT${RESET} / ${B_RED}▼ $DOWN_FMT${RESET}"
+    # Sekarang ini artinya "trafik total server", bukan dari API Xray lagi
+    local iface
+    iface=$(detect_main_interface)
+
+    local rx_bytes tx_bytes
+
+    # Prioritas: pakai /sys (modern)
+    if [[ -r "/sys/class/net/$iface/statistics/rx_bytes" ]]; then
+        rx_bytes=$(<"/sys/class/net/$iface/statistics/rx_bytes")
+        tx_bytes=$(<"/sys/class/net/$iface/statistics/tx_bytes")
+    else
+        # Fallback: /proc/net/dev
+        read rx_bytes tx_bytes <<< "$(
+            awk -v dev="$iface:" '
+                $1 == dev {
+                    gsub(":", "", $1);
+                    # kolom 2 = RX bytes, kolom 10 = TX bytes
+                    print $2, $10
+                }' /proc/net/dev 2>/dev/null
+        )"
+    fi
+
+    rx_bytes=${rx_bytes:-0}
+    tx_bytes=${tx_bytes:-0}
+
+    local rx_fmt tx_fmt
+    rx_fmt=$(numfmt --to=iec --suffix=B "$rx_bytes" 2>/dev/null || echo "${rx_bytes}B")
+    tx_fmt=$(numfmt --to=iec --suffix=B "$tx_bytes" 2>/dev/null || echo "${tx_bytes}B")
+
+    # ▲ = TX (up), ▼ = RX (down)
+    echo -e "${B_GREEN}▲ $tx_fmt${RESET} / ${B_RED}▼ $rx_fmt${RESET} ${CYAN}($iface)${RESET}"
 }
 # --- AKHIR FUNGSI TRAFIK ---
 
@@ -668,7 +711,7 @@ print_system_header() {
     echo -e "  ${B_WHITE}IP:${RESET} $ip_val (${B_CYAN}$isp_val - $country_val${RESET})"
     
     # --- PERBAIKAN: Label diperbarui ---
-    echo -e "  ${B_WHITE}Trafik Total Xray:${RESET} $total_traffic"
+    echo -e "  ${B_WHITE}Trafik Total Server:${RESET} $total_traffic"
 
     echo -e "  ${B_WHITE}Status Layanan:${RESET}"
     echo -e "    ${CYAN}Xray:${RESET}      $xray_status  |  ${CYAN}Nginx:${RESET}     $nginx_status  |  ${CYAN}Wireproxy:${RESET} $wireproxy_status"
