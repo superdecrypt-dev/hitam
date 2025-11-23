@@ -472,35 +472,71 @@ quota_unblock_user(){
   pause_for_enter
 }
 
-# Hapus kuota user
+# Reset kuota user (pakai kuota yang sama, pemakaian direset ke 0 dan di-unblock)
 quota_delete_user(){
   clear
-  print_header "HAPUS KUOTA AKUN"
+  print_header "RESET KUOTA AKUN"
 
   if [[ ! -s "$QUOTA_DB" ]]; then
     print_warn "Belum ada akun yang memiliki kuota."
     pause_for_enter; return 0
   fi
 
+  # Sync dulu pemakaian supaya last_up/last_down = trafik terkini
+  quota_update_usage
+
   echo -e "${B_WHITE}Daftar akun yang punya kuota:${RESET}"
   awk -F'|' '{printf "  %d. %s\n", NR, $1}' "$QUOTA_DB"
   echo ""
 
-  print_menu_prompt "Masukkan username yang akan dihapus kuotanya (0 untuk batal)" q_user
+  print_menu_prompt "Masukkan username yang akan di-reset kuotanya (0 untuk batal)" q_user
   if [[ "$q_user" == "0" ]]; then return 0; fi
   if [[ -z "$q_user" ]]; then
     print_error "Username tidak boleh kosong."
     pause_for_enter; return 1
   fi
 
+  # Pastikan user ada di quota.db
+  if ! grep -q "^$q_user|" "$QUOTA_DB"; then
+    print_warn "User '$q_user' tidak ditemukan di quota.db."
+    pause_for_enter
+    return 0
+  fi
+
+  # Reset kolom 'used' ke 0, kuota (q) & last_up/last_down tetap (sudah current)
   local tmp="$QUOTA_DB.tmp.$$"
-  if grep -q "^$q_user|" "$QUOTA_DB"; then
-    grep -v "^$q_user|" "$QUOTA_DB" > "$tmp"
-    mv "$tmp" "$QUOTA_DB"
-    print_info "Kuota untuk user '$q_user' dihapus."
+  : > "$tmp"
+  while IFS='|' read -r u q used last_up last_down; do
+    [[ -z "$u" ]] && continue
+    [[ -z "$used" ]] && used=0
+    [[ -z "$last_up" ]] && last_up=0
+    [[ -z "$last_down" ]] && last_down=0
+
+    if [[ "$u" == "$q_user" ]]; then
+      used=0
+    fi
+
+    echo "$u|$q|$used|$last_up|$last_down" >> "$tmp"
+  done < "$QUOTA_DB"
+  mv "$tmp" "$QUOTA_DB"
+
+  print_info "Pemakaian kuota user '$q_user' telah di-reset ke 0 (batas kuota tetap)."
+
+  # Hapus user ini dari rule 'blocked' khusus kuota (jika pernah diblokir)
+  local cfg_tmp="$CONFIG.tmp.$$"
+  if jq --arg user "$q_user" '
+    (.routing.rules[]
+      | select(.outboundTag == "blocked"
+               and (.user|type=="array")
+               and (.user | index("quota") != null))
+      | .user) |= (del(.[] | select(. == $user)))
+  ' "$CONFIG" > "$cfg_tmp"; then
+    mv "$cfg_tmp" "$CONFIG"
+    print_info "User '$q_user' juga dihapus dari daftar blokir kuota."
+    restart_xray
   else
-    print_warn "User '$q_user' tidak punya kuota."
-    rm -f "$tmp" 2>/dev/null
+    rm -f "$cfg_tmp"
+    print_warn "Gagal memperbarui konfigurasi Xray saat menghapus blokir kuota user '$q_user'."
   fi
 
   pause_for_enter
@@ -1066,12 +1102,16 @@ update_all_accounts_domain(){
              http)
                link_tls="$(http_link_tls "$secret" "$new_domain" "$user" "$path")"
                link_nontls="$(http_link_nontls "$secret" "$new_domain" "$user" "$path")"
-               notes="--- Catatan Penting ---\n- Wajib menggunakan aplikasi Exclave (bisa cari di internet)\n- Untuk Websocket harus input manual seperti path websocket"
+               notes="--- Catatan Penting ---
+  - Wajib menggunakan aplikasi Exclave (bisa cari di internet)
+  - Untuk Websocket harus input manual seperti path websocket"
                ;;
              socks)
                link_tls="$(socks_link_tls "$secret" "$new_domain" "$user" "$path")"
                link_nontls="$(socks_link_nontls "$secret" "$new_domain" "$user" "$path")"
-               notes="--- Catatan Penting ---\n- Wajib menggunakan aplikasi Exclave (bisa cari di internet)\n- Untuk Websocket harus input manual seperti path websocket"
+               notes="--- Catatan Penting ---
+  - Wajib menggunakan aplikasi Exclave (bisa cari di internet)
+  - Untuk Websocket harus input manual seperti path websocket"
                ;;
            esac
 
@@ -1325,12 +1365,16 @@ aksi_buat(){
     http)
       link_tls="$(http_link_tls "$secret" "$domain" "$user" "$path")"
       link_nontls="$(http_link_nontls "$secret" "$domain" "$user" "$path")"
-      notes="--- Catatan Penting ---\n- Wajib menggunakan aplikasi Exclave (bisa cari di internet)\n- Untuk Websocket harus input manual seperti path websocket"
+      notes="--- Catatan Penting ---
+  - Wajib menggunakan aplikasi Exclave (bisa cari di internet)
+  - Untuk Websocket harus input manual seperti path websocket"
       ;;
     socks)
       link_tls="$(socks_link_tls "$secret" "$domain" "$user" "$path")"
       link_nontls="$(socks_link_nontls "$secret" "$domain" "$user" "$path")"
-      notes="--- Catatan Penting ---\n- Wajib menggunakan aplikasi Exclave (bisa cari di internet)\n- Untuk Websocket harus input manual seperti path websocket"
+      notes="--- Catatan Penting ---
+  - Wajib menggunakan aplikasi Exclave (bisa cari di internet)
+  - Untuk Websocket harus input manual seperti path websocket"
       ;;
   esac
 
@@ -1525,23 +1569,20 @@ aksi_daftar_akun(){
   local n=1
   
   read_db(){
-  local p="$1"
-  local f="$ACCOUNTS_DIR/$p.db"
-  if [[ -f "$f" ]]; then
-    while IFS='|' read -r u s e c q; do
-      [[ -z "$u" ]] && continue
-      [[ -z "$c" ]] && c="-"
-      local qinfo
-      qinfo=$(get_quota_brief_for_user "$u")
-      # e  = expired (kolom 3)
-      # c  = created (kolom 4)
-      # q  = quota_gb (kolom 5, tidak dipakai di header ini)
-      printf "  %-4s | %-12s | %-15s | %-12s | %-12s | %-18s\n" \
-             "$n" "${p^^}" "$u" "$c" "$e" "$qinfo"
-      ((n++))
-    done < "$f"
-  fi
-}
+    local p="$1"
+    local f="$ACCOUNTS_DIR/$p.db"
+    if [[ -f "$f" ]]; then
+      while IFS='|' read -r u s e c q; do
+        [[ -z "$u" ]] && continue
+        [[ -z "$c" ]] && c="-"
+        local qinfo
+        qinfo=$(get_quota_brief_for_user "$u")
+        printf "  %-4s | %-12s | %-15s | %-12s | %-12s | %-18s\n" \
+               "$n" "${p^^}" "$u" "$c" "$e" "$qinfo"
+        ((n++))
+      done < "$f"
+    fi
+  }
 
   read_db "vmess"
   read_db "vless"
@@ -1553,7 +1594,37 @@ aksi_daftar_akun(){
   echo "  ---------------------------------------------------------------------------------------------"
   
   print_menu_prompt "Lihat Detail (Masukkan Username) atau [Enter] untuk kembali" target_user
-  ...
+
+  # Kalau user langsung Enter → cuma pause sebentar lalu balik ke menu utama
+  if [[ -z "$target_user" ]]; then
+    pause_for_enter
+    return 0
+  fi
+
+  # Cari file detail akun berdasarkan username di semua protokol
+  local detail_file=""
+  local proto_found=""
+
+  for p in vmess vless trojan shadowsocks http socks; do
+    local fpath="$ACCOUNTS_DIR/$p/$target_user-$p.txt"
+    if [[ -f "$fpath" ]]; then
+      detail_file="$fpath"
+      proto_found="$p"
+      break
+    fi
+  done
+
+  if [[ -n "$detail_file" ]]; then
+    clear
+    print_header "DETAIL AKUN: $target_user (${proto_found^^})"
+    cat "$detail_file"
+    echo ""
+  else
+    print_error "Detail akun untuk user '$target_user' tidak ditemukan."
+    echo -e "  Cek lagi username atau pastikan akun sudah dibuat."
+  fi
+
+  pause_for_enter
 }
 
 # MENU: Sistem Kuota
@@ -1563,7 +1634,7 @@ aksi_kuota(){
     print_header "SISTEM KUOTA AKUN XRAY"
 
     print_menu_option "1)" "Set / Ubah kuota akun"
-    print_menu_option "2)" "Hapus kuota akun"
+    print_menu_option "2)" "Reset kuota akun"
     print_menu_option "3)" "Lihat status kuota semua akun"
     print_menu_option "4)" "Cek & blokir akun yang habis kuota (manual)"
     print_menu_option "5)" "Buka blokir akun kuota (unblock)"
