@@ -1102,7 +1102,6 @@ start_services() {
 
 # ==========================================================
 # FITUR BARU: Install Menu Script & Sinkronisasi Config
-# ==========================================================
 install_menu_script() {
     print_header "Langkah 11: Instalasi Skrip Menu"
 
@@ -1134,6 +1133,7 @@ install_menu_script() {
         print_error "Gagal mengunduh skrip menu. Cek koneksi atau URL (lihat log)."
     fi
 }
+# ==========================================================
 
 # ==========================================================
 # FITUR BARU: Install Auto-Delete Expired Accounts (xp)
@@ -1264,6 +1264,29 @@ EOF
     print_info "Auto-delete berhasil dijadwalkan."
 }
 
+install_quota_cron() {
+    print_header "Langkah 13: Setup Cron Sistem Kuota"
+
+    # Pastikan binary menu ada dulu
+    if [[ ! -x /usr/local/bin/menu ]]; then
+        print_warn "File /usr/local/bin/menu tidak ditemukan atau belum executable."
+        print_warn "Cron cek kuota TIDAK ditambahkan. Pastikan skrip menu terpasang dulu."
+        return
+    fi
+
+    print_info "Menambahkan cronjob cek & blokir kuota (jalan tiap 15 menit)..."
+
+    # Hapus entry lama (kalau ada), lalu tambahkan yang baru
+    # Ini pakai crontab user root (installer memang dijalankan sebagai root)
+    (crontab -l 2>/dev/null | grep -v "/usr/local/bin/menu --cek-kuota" ; \
+     echo "*/15 * * * * /usr/local/bin/menu --cek-kuota >/dev/null 2>&1") | crontab -
+
+    # Restart service cron supaya aman
+    run_task "Restart service cron (untuk cron kuota)" "systemctl restart cron"
+
+    print_info "Cron cek kuota berhasil dijadwalkan (*/15 menit)."
+}
+
 # --- 12. Ringkasan ---
 show_summary() {
     echo -e "\n"
@@ -1348,6 +1371,9 @@ main() {
     
     # LANGKAH AUTO-DELETE (XP)
     install_autoxp
+    
+    # LANGKAH CRON KUOTA
+    install_quota_cron
     
     show_summary
 

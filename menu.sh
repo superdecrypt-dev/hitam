@@ -13,6 +13,9 @@ HOSTS_FILE="/usr/local/etc/xray/added_hosts.txt"
 ACME_BIN="$HOME/.acme.sh/acme.sh"
 ASSET_DIR="/usr/local/etc/xray"
 ACCOUNTS_DIR="$ASSET_DIR/accounts"
+QUOTA_DB="$ASSET_DIR/quota.db"
+XRAY_BIN="/usr/local/bin/xray"
+XRAY_API_SERVER="127.0.0.1:10000"
 
 # ====== Konfigurasi Cloudflare & Domain Tersedia ======
 CF_TOKEN="qz31v4icXAb7593V_cafEHPEvskw5V8rWES95AZx"
@@ -41,9 +44,6 @@ B_MAGENTA="${ESC}1;35m"
 B_CYAN="${ESC}1;36m"
 B_WHITE="${ESC}1;37m"
 
-# ======================================================================
-# --- Fungsi UI / Helper ---
-# ======================================================================
 COLS=$(tput cols 2>/dev/null || echo 80)
 
 print_line() {
@@ -104,9 +104,6 @@ pause_for_enter() {
     read -r
 }
 
-# ======================================================================
-# --- FUNGSI SPINNER BARU (diimpor dari installer) ---
-# ======================================================================
 run_task() {
     local msg=$1
     shift
@@ -151,13 +148,7 @@ run_task() {
         return 1 # Gagal
     fi
 }
-# ======================================================================
-# --- AKHIR FUNGSI SPINNER ---
-# ======================================================================
 
-# ======================================================================
-# --- FUNGSI HEADER INFO SISTEM (DIPERBARUI) ---
-# ======================================================================
 get_service_status() {
     local service="$1"
     if systemctl is-active --quiet "$service"; then
@@ -169,51 +160,423 @@ get_service_status() {
 
 # --- PERBAIKAN: Fungsi ambil trafik (gabungan in/out) ---
 get_xray_total_traffic() {
-    local _XRAY_BIN="/usr/local/bin/xray"
-    # Port 10000 sesuai config installer
-    local _XRAY_API_SERVER="127.0.0.1:10000" 
-    
-    if [[ ! -x "$_XRAY_BIN" ]]; then
-        echo -e "${B_RED}Xray-bin T/A${RESET}"
-        return
-    fi
-
-    # Panggil API
+    if [[ ! -x "$XRAY_BIN" ]]; then echo "Xray T/A"; return; fi
     local APIDATA
-    APIDATA=$("$_XRAY_BIN" api statsquery --server="$_XRAY_API_SERVER" 2>/dev/null | \
-        awk '
-        {
+    APIDATA=$("$XRAY_BIN" api statsquery --server="$XRAY_API_SERVER" 2>/dev/null | \
+        awk '{
             if (match($1, /"name":/)) {
                 f=1; gsub(/^"|link"|,$/, "", $2);
                 split($2, p,  ">>>");
                 printf "%s:%s->%s\t", p[1],p[2],p[4];
             }
             else if (match($1, /"value":/) && f){
-              f = 0;
-              gsub(/"/, "", $2);
-              printf "%.0f\n", $2;
+              f = 0; gsub(/"/, "", $2); printf "%.0f\n", $2;
             }
             else if (match($0, /}/) && f) { f = 0; print 0; }
         }')
     
-    if [[ -z "$APIDATA" ]]; then
-        echo -e "${B_RED}N/A (API Gagal/Nonaktif)${RESET}"
-        return
-    fi
-
-    # --- PERUBAHAN: Kalkulasi gabungan inbound + outbound ---
+    if [[ -z "$APIDATA" ]]; then echo "API Error"; return; fi
     local TOTAL_UP=$(echo "$APIDATA" | grep -E "^(inbound|outbound)" | grep -- '->up' | awk '{sum+=$2} END {printf "%.0f", sum}')
     local TOTAL_DOWN=$(echo "$APIDATA" | grep -E "^(inbound|outbound)" | grep -- '->down' | awk '{sum+=$2} END {printf "%.0f", sum}')
-    # --- AKHIR PERUBAHAN ---
-
-    # Format ke human-readable
     local UP_FMT=$(echo "$TOTAL_UP" | numfmt --suffix=B --to=iec)
     local DOWN_FMT=$(echo "$TOTAL_DOWN" | numfmt --suffix=B --to=iec)
-
     echo -e "${B_GREEN}▲ $UP_FMT${RESET} / ${B_RED}▼ $DOWN_FMT${RESET}"
 }
 # --- AKHIR FUNGSI TRAFIK ---
 
+# Format bytes ke bentuk manusiawi (KB/MB/GB)
+bytes_to_human(){
+  local b="${1:-0}"
+  numfmt --to=iec --suffix=B "$b" 2>/dev/null || echo "${b}B"
+}
+
+# Update pemakaian semua user di QUOTA_DB berdasarkan Xray Stats
+quota_update_usage(){
+  # Kalau quota.db kosong, nggak ada yang perlu diupdate
+  if [[ ! -s "$QUOTA_DB" ]]; then
+    return 0
+  fi
+
+  local _XRAY_BIN="/usr/local/bin/xray"
+  local _XRAY_API_SERVER="127.0.0.1:10000"
+  local APIDATA=""
+
+  if [[ -x "$_XRAY_BIN" ]]; then
+    APIDATA=$("$_XRAY_BIN" api statsquery --server="$_XRAY_API_SERVER" 2>/dev/null | awk '
+      /"name"/ {
+        gsub(/"|,/, "", $2);
+        split($2, p, ">>>");
+        key = p[1] ":" p[2] "->" p[4];
+        next;
+      }
+      /"value"/ {
+        gsub(/[,]/, "", $2);
+        print key "\t" $2;
+      }
+    ')
+  fi
+
+  # Kalau gagal ambil stats, jangan rusak DB, langsung keluar
+  if [[ -z "$APIDATA" ]]; then
+    return 0
+  fi
+
+  local tmp="$QUOTA_DB.tmp.$$"
+  > "$tmp"
+
+  while IFS='|' read -r u q used last_up last_down; do
+    [[ -z "$u" ]] && continue
+
+    # Default jika kolom lama (kalau suatu saat ada upgrade format)
+    [[ -z "$used" ]] && used=0
+    [[ -z "$last_up" ]] && last_up=0
+    [[ -z "$last_down" ]] && last_down=0
+
+    # Ambil traffic terkini user u
+    local curr_up curr_down
+    curr_up=$(echo "$APIDATA" | awk -v u="$u" '$1 ~ "^user:"u"->uplink"   {sum+=$2} END{if(sum=="")sum=0; printf "%.0f", sum}')
+    curr_down=$(echo "$APIDATA" | awk -v u="$u" '$1 ~ "^user:"u"->downlink" {sum+=$2} END{if(sum=="")sum=0; printf "%.0f", sum}')
+
+    # Hitung delta (jaga-jaga kalau counter reset saat Xray di-restart)
+    local du dd
+    if (( curr_up >= last_up )); then
+      du=$((curr_up - last_up))
+    else
+      du=$curr_up
+    fi
+
+    if (( curr_down >= last_down )); then
+      dd=$((curr_down - last_down))
+    else
+      dd=$curr_down
+    fi
+
+    local new_used=$used
+    new_used=$(( new_used + du + dd ))
+
+    echo "$u|$q|$new_used|$curr_up|$curr_down" >> "$tmp"
+  done < "$QUOTA_DB"
+
+  mv "$tmp" "$QUOTA_DB"
+}
+
+# Tambahkan user ke rule 'blocked' khusus sistem kuota (rule yang mengandung "quota" di .user)
+quota_block_user_norestart(){
+  local user="$1"
+  local tmp="$CONFIG.tmp.$$"
+
+  # Ambil semua user dari rule blocked yang punya array .user dan mengandung "quota"
+  local quota_rule_users_json
+  quota_rule_users_json=$(jq -r '
+    [
+      .routing.rules[]
+      | select(.outboundTag == "blocked"
+               and (.user|type=="array")
+               and (.user | index("quota") != null))
+      | .user
+    ] | add // []' "$CONFIG")
+
+  # Kalau user sudah ada di rule kuota, tidak perlu ditambah lagi
+  if echo "$quota_rule_users_json" | jq -e --arg u "$user" '.[] | select(. == $u)' > /dev/null 2>&1; then
+    return 1
+  fi
+
+  # Tambahkan user hanya ke rule yang punya array .user dan mengandung "quota"
+  if jq --arg user "$user" '
+    (.routing.rules[]
+      | select(.outboundTag == "blocked"
+               and (.user|type=="array")
+               and (.user | index("quota") != null))
+      | .user) |= (. + [$user] | unique)
+  ' "$CONFIG" > "$tmp"; then
+    mv "$tmp" "$CONFIG"
+    return 0
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+# Set / Ubah kuota user
+quota_set_user(){
+  clear
+  print_header "SET / UBAH KUOTA AKUN"
+
+  # === TAMPILAN HEADER INFORMASI (mirip quota_list_status) ===
+  if [[ -s "$QUOTA_DB" ]]; then
+    # Update pemakaian dulu biar data fresh
+    quota_update_usage
+
+    printf "  %-15s | %-12s | %-12s | %-12s | %-8s\n" "User" "Kuota" "Terpakai" "Sisa" "Status"
+    echo   "  -------------------------------------------------------------------------------"
+
+    while IFS='|' read -r u q used last_up last_down; do
+      [[ -z "$u" ]] && continue
+      [[ -z "$used" ]] && used=0
+
+      local sisa=$(( q > used ? q - used : 0 ))
+      local status="AKTIF"
+      if (( used >= q )); then
+        status="HABIS"
+      fi
+
+      printf "  %-15s | %-12s | %-12s | %-12s | %-8s\n" \
+        "$u" "$(bytes_to_human "$q")" "$(bytes_to_human "$used")" "$(bytes_to_human "$sisa")" "$status"
+    done < "$QUOTA_DB"
+
+    echo   "  -------------------------------------------------------------------------------"
+    echo ""  # spasi sebelum input
+  else
+    print_warn "Belum ada akun yang memiliki kuota. Isian di bawah akan membuat kuota baru."
+    echo ""
+  fi
+  # === AKHIR HEADER INFORMASI ===
+
+  print_menu_prompt "Masukkan username (0 untuk batal)" q_user
+  if [[ "$q_user" == "0" ]]; then return 0; fi
+  if [[ -z "$q_user" ]]; then
+    print_error "Username tidak boleh kosong."
+    pause_for_enter; return 1
+  fi
+
+  # Cek apakah user ada di ledger
+  if ! grep -R -q "^${q_user}|" "$ACCOUNTS_DIR"/*.db 2>/dev/null; then
+    print_error "User '$q_user' tidak ditemukan di ledger akun."
+    pause_for_enter; return 1
+  fi
+
+  print_menu_prompt "Masukkan kuota (dalam GB, contoh: 10)" q_gb
+  if [[ ! "$q_gb" =~ ^[0-9]+$ ]]; then
+    print_error "Kuota harus angka (GB)."
+    pause_for_enter; return 1
+  fi
+
+  local quota_bytes=$((q_gb * 1024 * 1024 * 1024))
+
+  # Ambil traffic sekarang untuk dijadikan baseline
+  local _XRAY_BIN="/usr/local/bin/xray"
+  local _XRAY_API_SERVER="127.0.0.1:10000"
+  local curr_up=0
+  local curr_down=0
+
+  if [[ -x "$_XRAY_BIN" ]]; then
+    local APIDATA
+    APIDATA=$("$_XRAY_BIN" api statsquery --server="$_XRAY_API_SERVER" 2>/dev/null | awk '
+      /"name"/ {
+        gsub(/"|,/, "", $2);
+        split($2, p, ">>>");
+        key = p[1] ":" p[2] "->" p[4];
+        next;
+      }
+      /"value"/ {
+        gsub(/[,]/, "", $2);
+        print key "\t" $2;
+      }
+    ')
+    if [[ -n "$APIDATA" ]]; then
+      curr_up=$(echo "$APIDATA" | awk -v u="$q_user" '$1 ~ "^user:"u"->uplink"   {sum+=$2} END{if(sum=="")sum=0; printf "%.0f", sum}')
+      curr_down=$(echo "$APIDATA" | awk -v u="$q_user" '$1 ~ "^user:"u"->downlink" {sum+=$2} END{if(sum=="")sum=0; printf "%.0f", sum}')
+    fi
+  fi
+
+  # Tulis / update quota.db: user|quota_bytes|used_bytes|last_up|last_down
+  local tmp="$QUOTA_DB.tmp.$$"
+  # Buang entri lama user (kalau ada)
+  grep -v "^$q_user|" "$QUOTA_DB" 2>/dev/null > "$tmp" || true
+  echo "$q_user|$quota_bytes|0|$curr_up|$curr_down" >> "$tmp"
+  mv "$tmp" "$QUOTA_DB"
+
+  print_info "Kuota untuk user '$q_user' diset ke $(bytes_to_human "$quota_bytes")."
+  print_info "Perhitungan dimulai dari pemakaian saat ini."
+  pause_for_enter
+}
+
+# Buka blokir akun yang diblokir oleh sistem kuota
+quota_unblock_user(){
+  clear
+  print_header "BUKA BLOKIR AKUN KUOTA"
+
+  # Ambil semua user dari rule 'blocked' yang dipakai sistem kuota (mengandung "quota" di array .user)
+  local quota_rule_users_json
+  quota_rule_users_json=$(jq -r '
+    [
+      .routing.rules[]
+      | select(.outboundTag == "blocked"
+               and (.user|type=="array")
+               and (.user | index("quota") != null))
+      | .user
+    ] | add // []' "$CONFIG")
+
+  # Konversi ke list baris-per-baris dan buang entri "quota" (system sentinel)
+  local quota_rule_users
+  quota_rule_users=$(echo "$quota_rule_users_json" | jq -r '.[]' 2>/dev/null | grep -v '^quota$' || true)
+
+  if [[ -z "$quota_rule_users" ]]; then
+    print_warn "Tidak ada akun yang sedang diblokir oleh sistem kuota."
+    pause_for_enter
+    return 0
+  fi
+
+  # Ambil map user|proto dari ledger
+  local all_users_map
+  all_users_map=$(get_all_created_users_map)
+
+  local blocked_proto_list=""
+  local blocked_user_list=""
+
+  while read -r u; do
+    [[ -z "$u" ]] && continue
+    local proto
+    proto=$(echo "$all_users_map" | awk -F'|' -v uu="$u" '$1==uu {print $2; exit}')
+    [[ -z "$proto" ]] && proto="-"
+    blocked_proto_list+="$proto\n"
+    blocked_user_list+="$u\n"
+  done <<< "$quota_rule_users"
+
+  echo -e "${B_WHITE}Daftar akun yang diblokir oleh sistem kuota:${RESET}"
+  print_side_by_side "Protokol" "$(echo -e "$blocked_proto_list")" \
+                     "User diblokir kuota" "$(echo -e "$blocked_user_list")"
+
+  print_menu_prompt "Masukkan username yang akan di-UNBLOK (0 untuk batal)" q_user
+  if [[ "$q_user" == "0" ]]; then return 0; fi
+  if [[ -z "$q_user" ]]; then
+    print_error "Username tidak boleh kosong."
+    pause_for_enter
+    return 1
+  fi
+
+  # Pastikan username memang ada di daftar blokir kuota
+  if ! echo "$quota_rule_users" | grep -qx "$q_user"; then
+    print_warn "User '$q_user' tidak ditemukan dalam daftar blokir kuota."
+    pause_for_enter
+    return 1
+  fi
+
+  local tmp="$CONFIG.tmp.$$"
+  # Hapus user itu dari rule 'blocked' yang punya "quota"
+  if jq --arg user "$q_user" '
+    (.routing.rules[]
+      | select(.outboundTag == "blocked"
+               and (.user|type=="array")
+               and (.user | index("quota") != null))
+      | .user) |= (del(.[] | select(. == $user)))
+  ' "$CONFIG" > "$tmp"; then
+    mv "$tmp" "$CONFIG"
+    print_info "User '$q_user' berhasil di-UNBLOK dari blokir kuota."
+    restart_xray
+  else
+    rm -f "$tmp"
+    print_error "Gagal memperbarui konfigurasi Xray."
+  fi
+
+  pause_for_enter
+}
+
+# Hapus kuota user
+quota_delete_user(){
+  clear
+  print_header "HAPUS KUOTA AKUN"
+
+  if [[ ! -s "$QUOTA_DB" ]]; then
+    print_warn "Belum ada akun yang memiliki kuota."
+    pause_for_enter; return 0
+  fi
+
+  echo -e "${B_WHITE}Daftar akun yang punya kuota:${RESET}"
+  awk -F'|' '{printf "  %d. %s\n", NR, $1}' "$QUOTA_DB"
+  echo ""
+
+  print_menu_prompt "Masukkan username yang akan dihapus kuotanya (0 untuk batal)" q_user
+  if [[ "$q_user" == "0" ]]; then return 0; fi
+  if [[ -z "$q_user" ]]; then
+    print_error "Username tidak boleh kosong."
+    pause_for_enter; return 1
+  fi
+
+  local tmp="$QUOTA_DB.tmp.$$"
+  if grep -q "^$q_user|" "$QUOTA_DB"; then
+    grep -v "^$q_user|" "$QUOTA_DB" > "$tmp"
+    mv "$tmp" "$QUOTA_DB"
+    print_info "Kuota untuk user '$q_user' dihapus."
+  else
+    print_warn "User '$q_user' tidak punya kuota."
+    rm -f "$tmp" 2>/dev/null
+  fi
+
+  pause_for_enter
+}
+
+# Tampilkan status kuota semua akun (setelah update pemakaian)
+quota_list_status(){
+  clear
+  print_header "STATUS KUOTA AKUN"
+
+  if [[ ! -s "$QUOTA_DB" ]]; then
+    print_warn "Belum ada akun yang memiliki kuota."
+    pause_for_enter; return 0
+  fi
+
+  # Update pemakaian dulu
+  quota_update_usage
+
+  printf "  %-15s | %-12s | %-12s | %-12s | %-8s\n" "User" "Kuota" "Terpakai" "Sisa" "Status"
+  echo   "  -------------------------------------------------------------------------------"
+
+  while IFS='|' read -r u q used last_up last_down; do
+    [[ -z "$u" ]] && continue
+    [[ -z "$used" ]] && used=0
+
+    local sisa=$(( q > used ? q - used : 0 ))
+    local status="AKTIF"
+    if (( used >= q )); then
+      status="HABIS"
+    fi
+
+    printf "  %-15s | %-12s | %-12s | %-12s | %-8s\n" \
+      "$u" "$(bytes_to_human "$q")" "$(bytes_to_human "$used")" "$(bytes_to_human "$sisa")" "$status"
+  done < "$QUOTA_DB"
+
+  echo   "  -------------------------------------------------------------------------------"
+  pause_for_enter
+}
+
+# Cek kuota dan blokir akun yang habis
+quota_enforce_now(){
+  clear
+  print_header "CEK & BLOKIR AKUN HABIS KUOTA"
+
+  if [[ ! -s "$QUOTA_DB" ]]; then
+    print_warn "Tidak ada akun yang diatur kuotanya."
+    pause_for_enter; return 0
+  fi
+
+  # Update pemakaian dulu
+  quota_update_usage
+
+  local need_restart=0
+
+  while IFS='|' read -r u q used last_up last_down; do
+    [[ -z "$u" ]] && continue
+    [[ -z "$used" ]] && used=0
+
+    if (( used >= q )); then
+      if quota_block_user_norestart "$u"; then
+        print_warn "Kuota user '$u' HABIS → ditambahkan ke daftar blokir."
+        need_restart=1
+      else
+        print_info "User '$u' sudah dalam daftar blokir."
+      fi
+    fi
+  done < "$QUOTA_DB"
+
+  if (( need_restart == 1 )); then
+    restart_xray
+  else
+    print_info "Tidak ada perubahan pada daftar blokir (belum ada kuota yang habis)."
+  fi
+
+  pause_for_enter
+}
 
 print_system_header() {
     # 1. Get OS
@@ -276,10 +639,6 @@ print_system_header() {
     
     print_line "-" "$CYAN"
 }
-# ======================================================================
-# --- AKHIR FUNGSI HEADER ---
-# ======================================================================
-
 
 # --- Fungsi Tampilan 3 Kolom ---
 print_three_columns() {
@@ -316,9 +675,6 @@ print_three_columns() {
     echo "" # Spasi
 }
 
-# ======================================================================
-# --- PERBAIKAN: Menambahkan kembali print_side_by_side (2 kolom) ---
-# ======================================================================
 print_side_by_side() {
     local header_left="$1"
     local list_left="$2"
@@ -342,13 +698,6 @@ print_side_by_side() {
     
     echo "" # Spasi
 }
-# ======================================================================
-# --- AKHIR PERBAIKAN ---
-# ======================================================================
-
-# ======================================================================
-# --- Logika Skrip (menu.sh) ---
-# ======================================================================
 
 # ====== Cek & Buat Direktori (UPDATED) ======
 ensure_dirs(){
@@ -363,6 +712,7 @@ ensure_dirs(){
   done
   
   if [[ ! -f "$HOSTS_FILE" ]]; then touch "$HOSTS_FILE"; fi
+  if [[ ! -f "$QUOTA_DB" ]]; then touch "$QUOTA_DB"; fi   # <<--- BARU
 }
 
 # ====== Guard ======
@@ -429,9 +779,6 @@ get_ss_server_psk() {
     jq -r '(.inbounds[] | select(.protocol=="shadowsocks") | .settings.password // "")' "$CONFIG"
 }
 
-# ======================================================================
-# --- PERUBAHAN: restart_xray() menggunakan run_task ---
-# ======================================================================
 restart_xray(){
   if ! run_task "Me-restart layanan Xray" "systemctl restart xray"; then
       print_warn "Layanan Xray gagal restart. Cek status."
@@ -439,9 +786,6 @@ restart_xray(){
   # Beri waktu Xray untuk stabil
   sleep 0.5
 }
-# ======================================================================
-# --- AKHIR PERUBAHAN ---
-# ======================================================================
 
 
 # ====== Operasi JSON klien (UPDATED) ======
@@ -624,7 +968,10 @@ socks_link_nontls(){
 }
 
 # ====== Ledger & Header Utils ======
-ledger_add(){ echo "$2|$3|$4|$5" >> "$ACCOUNTS_DIR/$1.db"; }
+ledger_add(){ 
+    local quota="${6:-0}" # Default 0 (unlimited) jika tidak ada
+    echo "$2|$3|$4|$5|$quota" >> "$ACCOUNTS_DIR/$1.db"; 
+}
 
 ledger_del(){
   local proto="$1"
@@ -637,49 +984,31 @@ ledger_del(){
 }
 
 ledger_extend(){
-  local proto="$1" user="$2" add="$3" line secret cur_exp created base newexp
+  local proto="$1" user="$2" add="$3"
   local db="$ACCOUNTS_DIR/$proto.db"
   local db_tmp="$ACCOUNTS_DIR/$proto.db.tmp"
   
-  if [[ ! -f "$db" ]]; then
-      print_error "Database $proto tidak ditemukan."
-      return 1
-  fi
+  [[ ! -f "$db" ]] && return 1
+  local line=$(grep "^$user|" "$db" || true)
+  [[ -z "$line" ]] && return 1
+  
+  local secret=$(echo "$line" | cut -d'|' -f2)
+  local cur_exp=$(echo "$line" | cut -d'|' -f3)
+  local created=$(echo "$line" | cut -d'|' -f4)
+  local quota=$(echo "$line" | cut -d'|' -f5)
+  [[ -z "$quota" ]] && quota="0" # Handle legacy format
 
-  line="$(grep "^$user|" "$db" || true)"
-  if [[ -z "$line" ]]; then
-      print_error "User '$user' tidak ditemukan di ledger $proto."
-      return 1
-  fi
-  
-  secret="$(echo "$line" | cut -d'|' -f2)"
-  cur_exp="$(echo "$line" | cut -d'|' -f3)"
-  created="$(echo "$line" | cut -d'|' -f4)" 
-  
-  local today_ts=$(date +%s)
-  local cur_exp_ts
-  if [[ -z "$cur_exp" ]]; then cur_exp_ts="$today_ts"; else cur_exp_ts=$(date -d "$cur_exp" +%s 2>/dev/null || echo "$today_ts"); fi
-  
-  if [[ $today_ts -gt $cur_exp_ts ]]; then base="$(date +%F)"; else base="$cur_exp"; fi
-  
-  if ! newexp="$(date -d "$base + $add days" +%F 2>/dev/null)"; then
-      print_error "Gagal menghitung tanggal baru."
-      return 1
-  fi
+  local newexp=$(date -d "$cur_exp + $add days" +%F)
   
   grep -v "^$user|" "$db" > "$db_tmp"
-  echo "$user|$secret|$newexp|$created" >> "$db_tmp"
+  echo "$user|$secret|$newexp|$created|$quota" >> "$db_tmp"
   mv "$db_tmp" "$db"
   
+  # Update file txt
   local txt_file="$ACCOUNTS_DIR/$proto/$user-$proto.txt"
   if [[ -f "$txt_file" ]]; then
       sed -i "s/^Expired[[:space:]]*: .*/Expired    : $newexp/" "$txt_file"
-      print_info "File informasi akun ($txt_file) telah diperbarui."
-  else
-      print_warn "File informasi akun text tidak ditemukan, hanya database yang diperbarui."
   fi
-  
-  print_info "Sukses! Akun $user ($proto) diperpanjang hingga $newexp (Dibuat: $created)"
 }
 
 show_account_list_by_proto(){
@@ -689,9 +1018,9 @@ show_account_list_by_proto(){
   printf "  %-15s | %-12s | %-12s\n" "Username" "Dibuat" "Expired"
   echo "  ---------------------------------------------"
   if [[ -f "$db_file" ]]; then
-    while IFS='|' read -r u s e c; do
-      [[ -z "$c" ]] && c="-"
-      printf "  %-15s | %-12s | %-12s\n" "$u" "$c" "$e"
+    while IFS='|' read -r u s e c q; do
+  [[ -z "$c" ]] && c="-"
+  printf "  %-15s | %-12s | %-12s\n" "$u" "$c" "$e"
     done < "$db_file"
   fi
   echo "  ---------------------------------------------"
@@ -891,12 +1220,22 @@ aksi_buat(){
     pause_for_enter
     return 1
   fi
-
+  
   print_menu_prompt "Masa aktif (hari, default 30)" days; days="${days:-30}"
   while [[ ! "$days" =~ ^[0-9]+$ ]]; do
     print_error "Input harus angka!"
     print_menu_prompt "Masa aktif (hari)" days
   done
+
+  # === Kuota (GB) ===
+  print_menu_prompt "Kuota (GB, 0 = unlimited)" quota
+  quota="${quota:-0}"
+  while [[ ! "$quota" =~ ^[0-9]+$ ]]; do
+    print_error "Kuota harus angka (GB)!"
+    print_menu_prompt "Kuota (GB, 0 = unlimited)" quota
+    quota="${quota:-0}"
+  done
+
   
   domain="$(get_domain)"; path="$(get_ws_path "$proto")"
   if [[ -z "$path" ]]; then
@@ -924,7 +1263,42 @@ aksi_buat(){
   esac
   restart_xray
   
-  created="$(date +%F)"; exp="$(date -d "+$days days" +%F)"; ledger_add "$proto" "$user" "$secret" "$exp" "$created"
+  created="$(date +%F)"; exp="$(date -d "+$days days" +%F)"; ledger_add "$proto" "$user" "$secret" "$exp" "$created" "$quota"
+  
+# === Integrasi: jika kuota > 0, langsung daftarkan ke QUOTA_DB ===
+  if (( quota > 0 )); then
+    local quota_bytes=$((quota * 1024 * 1024 * 1024))
+    local _XRAY_BIN="/usr/local/bin/xray"
+    local _XRAY_API_SERVER="127.0.0.1:10000"
+    local curr_up=0
+    local curr_down=0
+
+    if [[ -x "$_XRAY_BIN" ]]; then
+      local APIDATA
+      APIDATA=$("$_XRAY_BIN" api statsquery --server="$_XRAY_API_SERVER" 2>/dev/null | awk '
+        /"name"/ {
+          gsub(/"|,/, "", $2);
+          split($2, p, ">>>");
+          key = p[1] ":" p[2] "->" p[4];
+          next;
+        }
+        /"value"/ {
+          gsub(/[,]/, "", $2);
+          print key "\t" $2;
+        }
+      ')
+      if [[ -n "$APIDATA" ]]; then
+        curr_up=$(echo "$APIDATA"   | awk -v u="$user" '$1 ~ "^user:"u"->uplink"   {sum+=$2} END{if(sum=="")sum=0; printf "%.0f", sum}')
+        curr_down=$(echo "$APIDATA" | awk -v u="$user" '$1 ~ "^user:"u"->downlink" {sum+=$2} END{if(sum=="")sum=0; printf "%.0f", sum}')
+      fi
+    fi
+
+    # Tulis / update quota.db: user|quota_bytes|used_bytes|last_up|last_down
+    local tmpq="$QUOTA_DB.tmp.$$"
+    grep -v "^$user|" "$QUOTA_DB" 2>/dev/null > "$tmpq" || true
+    echo "$user|$quota_bytes|0|$curr_up|$curr_down" >> "$tmpq"
+    mv "$tmpq" "$QUOTA_DB"
+  fi
   
   # Generate Links
   local link_tls=""
@@ -999,7 +1373,7 @@ aksi_hapus(){
   echo "  -------------------------------------------------------------"
   for p in vmess vless trojan http socks shadowsocks; do
     f="$ACCOUNTS_DIR/$p.db"
-    [[ -f "$f" ]] && while IFS='|' read -r u s e c; do
+    [[ -f "$f" ]] && while IFS='|' read -r u s e c q; do
       [[ -z "$c" ]] && c="-"
       printf "  %-12s | %-15s | %-12s | %-12s\n" "${p^^}" "$u" "$c" "$e"
     done < "$f"
@@ -1045,6 +1419,14 @@ aksi_hapus(){
       rm -f "$txt_file"
       print_info "File detail akun dihapus: $txt_file"
   fi
+
+  # Hapus kuota user (jika ada) dari quota.db
+  if [[ -f "$QUOTA_DB" ]]; then
+      local tmpq="$QUOTA_DB.tmp.$$"
+      grep -v "^$user|" "$QUOTA_DB" > "$tmpq" 2>/dev/null || true
+      mv "$tmpq" "$QUOTA_DB"
+      print_info "Entri kuota untuk user '$user' dihapus dari quota.db (jika ada)."
+  fi
   
   print_info "Akun $user ($proto) berhasil dihapus."
   pause_for_enter
@@ -1060,7 +1442,7 @@ aksi_perpanjang(){
   for p in vmess vless trojan http socks shadowsocks; do
       local db="$ACCOUNTS_DIR/$p.db"
       if [[ -f "$db" ]]; then
-          while IFS='|' read -r u s e c; do
+          while IFS='|' read -r u s e c q; do
               [[ -z "$c" ]] && c="-" 
               printf "  %-12s | %-15s | %-12s | %-12s\n" "${p^^}" "$u" "$c" "$e"
           done < "$db"
@@ -1072,7 +1454,7 @@ aksi_perpanjang(){
   print_menu_option "1)" "VMess"
   print_menu_option "2)" "VLESS"
   print_menu_option "3)" "Trojan"
-  print_menu_option "4S)" "Shadowsocks (WS)"
+  print_menu_option "4)" "Shadowsocks (WS)"
   print_menu_option "5)" "HTTP (WS)"
   print_menu_option "6)" "SOCKS (WS)"
   echo ""
@@ -1107,25 +1489,59 @@ aksi_perpanjang(){
   pause_for_enter
 }
 
+# Ambil ringkasan kuota untuk user (Total / Terpakai) dalam format manusia
+get_quota_brief_for_user(){
+  local u="$1"
+  if [[ ! -s "$QUOTA_DB" ]]; then
+    echo "-"
+    return
+  fi
+  local line
+  line=$(grep "^$u|" "$QUOTA_DB" 2>/dev/null | head -n1 || true)
+  if [[ -z "$line" ]]; then
+    echo "-"
+    return
+  fi
+  local q used
+  q=$(echo "$line"   | cut -d'|' -f2)
+  used=$(echo "$line"| cut -d'|' -f3)
+  [[ -z "$used" ]] && used=0
+  echo "$(bytes_to_human "$q") / $(bytes_to_human "$used")"
+}
+
 aksi_daftar_akun(){
   clear
   print_header "DAFTAR AKUN"
-  printf "  %-4s | %-12s | %-15s | %-12s | %-12s\n" "No" "Proto" "User" "Dibuat" "Expired"
-  echo "  -----------------------------------------------------------------"
+
+  # Update pemakaian kuota dulu kalau ada DB
+  if [[ -s "$QUOTA_DB" ]]; then
+    quota_update_usage
+  fi
+
+  printf "  %-4s | %-12s | %-15s | %-12s | %-12s | %-18s\n" \
+         "No" "Proto" "User" "Dibuat" "Expired" "Kuota (Total/Pakai)"
+  echo "  ---------------------------------------------------------------------------------------------"
   
   local n=1
   
   read_db(){
-    local p="$1"
-    local f="$ACCOUNTS_DIR/$p.db"
-    if [[ -f "$f" ]]; then
-      while IFS='|' read -r u s e c; do
-        [[ -z "$c" ]] && c="-"
-        printf "  %-4s | %-12s | %-15s | %-12s | %-12s\n" "$n" "${p^^}" "$u" "$c" "$e"
-        ((n++))
-      done < "$f"
-    fi
-  }
+  local p="$1"
+  local f="$ACCOUNTS_DIR/$p.db"
+  if [[ -f "$f" ]]; then
+    while IFS='|' read -r u s e c q; do
+      [[ -z "$u" ]] && continue
+      [[ -z "$c" ]] && c="-"
+      local qinfo
+      qinfo=$(get_quota_brief_for_user "$u")
+      # e  = expired (kolom 3)
+      # c  = created (kolom 4)
+      # q  = quota_gb (kolom 5, tidak dipakai di header ini)
+      printf "  %-4s | %-12s | %-15s | %-12s | %-12s | %-18s\n" \
+             "$n" "${p^^}" "$u" "$c" "$e" "$qinfo"
+      ((n++))
+    done < "$f"
+  fi
+}
 
   read_db "vmess"
   read_db "vless"
@@ -1134,39 +1550,40 @@ aksi_daftar_akun(){
   read_db "http"
   read_db "socks"
   
-  echo "  -----------------------------------------------------------------"
+  echo "  ---------------------------------------------------------------------------------------------"
   
   print_menu_prompt "Lihat Detail (Masukkan Username) atau [Enter] untuk kembali" target_user
-
-  if [[ -z "$target_user" ]]; then return 0; fi
-
-  local found_proto=""
-  if [[ -f "$ACCOUNTS_DIR/vmess/$target_user-vmess.txt" ]]; then found_proto="vmess"
-  elif [[ -f "$ACCOUNTS_DIR/vless/$target_user-vless.txt" ]]; then found_proto="vless"
-  elif [[ -f "$ACCOUNTS_DIR/trojan/$target_user-trojan.txt" ]]; then found_proto="trojan"
-  elif [[ -f "$ACCOUNTS_DIR/shadowsocks/$target_user-shadowsocks.txt" ]]; then found_proto="shadowsocks"
-  elif [[ -f "$ACCOUNTS_DIR/http/$target_user-http.txt" ]]; then found_proto="http"
-  elif [[ -f "$ACCOUNTS_DIR/socks/$target_user-socks.txt" ]]; then found_proto="socks"
-  fi
-
-  if [[ -z "$found_proto" ]]; then
-    print_error "File informasi akun untuk user '$target_user' tidak ditemukan."
-    pause_for_enter
-    return 1
-  fi
-
-  local txt_file="$ACCOUNTS_DIR/$found_proto/$target_user-$found_proto.txt"
-  clear
-  print_header "DETAIL AKUN: $target_user"
-  echo -e "${B_WHITE}Source File: ${RESET}$txt_file\n"
-  cat "$txt_file"
-  echo ""
-  pause_for_enter
+  ...
 }
 
-# ======================================================================
-# --- PERUBAHAN: aksi_ganti_domain() menggunakan run_task ---
-# ======================================================================
+# MENU: Sistem Kuota
+aksi_kuota(){
+  while true; do
+    clear
+    print_header "SISTEM KUOTA AKUN XRAY"
+
+    print_menu_option "1)" "Set / Ubah kuota akun"
+    print_menu_option "2)" "Hapus kuota akun"
+    print_menu_option "3)" "Lihat status kuota semua akun"
+    print_menu_option "4)" "Cek & blokir akun yang habis kuota (manual)"
+    print_menu_option "5)" "Buka blokir akun kuota (unblock)"
+    echo ""
+    print_menu_option "0)" "Kembali ke Menu Utama"
+
+    print_menu_prompt "Pilih Opsi (0-5)" q_opt
+
+    case "$q_opt" in
+      1) quota_set_user ;;
+      2) quota_delete_user ;;
+      3) quota_list_status ;;
+      4) quota_enforce_now ;;
+      5) quota_unblock_user ;;
+      0) return 0 ;;
+      *) print_error "Pilihan tidak valid."; sleep 1 ;;
+    esac
+  done
+}
+
 aksi_ganti_domain(){
   clear
   print_header "GANTI DOMAIN"
@@ -1328,9 +1745,6 @@ aksi_ganti_domain(){
   print_info "Domain berhasil diganti ke: $newdom ($mode)"
   pause_for_enter
 }
-# ======================================================================
-# --- AKHIR PERUBAHAN ---
-# ======================================================================
 
 aksi_tambah_host(){
   while true; do
@@ -1466,9 +1880,6 @@ aksi_tambah_host(){
   done
 }
 
-# ======================================================================
-# --- PERUBAHAN: aksi_about() ---
-# ======================================================================
 aksi_about(){
   clear
   local domain pv pl pt pss phttp psocks
@@ -1524,51 +1935,71 @@ aksi_about(){
   echo -e "\n  ${YELLOW}Catatan: tanggal kadaluarsa di ledger hanya pengingat.${RESET}"
   pause_for_enter
 }
-# ======================================================================
-# --- AKHIR PERUBAHAN ---
-# ======================================================================
 
-
-# ======================================================================
-# --- FUNGSI MANAJEMEN RUTE (BARU) ---
-# ======================================================================
-
-# ======================================================================
-# --- PERUBAHAN: rute_blokir_akun (Tambah/Hapus) ---
-# ======================================================================
 rute_blokir_akun() {
   clear
   print_header "Blokir Akun (User/Email)"
   
-  # Ambil SEMUA user dari aturan
-  local rule_users_all_json=$(jq -r '(.routing.rules[] | select(.outboundTag == "blocked" and .user != null) | .user) // []' "$CONFIG")
-  
-  # --- UPDATE DISINI: Filter "user2" DAN "quota" dari tampilan ---
-  local rule_users_display=$(echo "$rule_users_all_json" | jq -r '[.[] | select(. != "user2" and . != "quota")] | .[]')
-  
-  # Siapkan list untuk 3 kolom
+  # Ambil SEMUA user dari aturan 'blocked' yang punya array .user
+  local rule_users_all_json
+  rule_users_all_json=$(jq -r '
+    [
+      .routing.rules[]
+      | select(.outboundTag == "blocked"
+               and (.user|type=="array"))
+      | .user
+    ] | add // []' "$CONFIG")
+
+  # List user yang benar-benar diblokir (tanpa user system)
+  local blocked_users
+  blocked_users=$(echo "$rule_users_all_json" | jq -r '.[]' 2>/dev/null | grep -Ev '^(user2|quota)$' || true)
+
+  # Panggil map user|proto dari ledger
+  local all_users_map
+  all_users_map=$(get_all_created_users_map)
+
+  # Siapkan list untuk user yang BELUM diblokir
   local users_tersedia_proto=""
   local users_tersedia_user=""
-  
-  # Panggil map user|proto
-  local all_users_map=$(get_all_created_users_map)
-  
+
+  # Siapkan list untuk user yang SUDAH diblokir
+  local blocked_proto_list=""
+  local blocked_user_list=""
+
+  # Build daftar user yang belum diblokir
   while IFS='|' read -r user proto; do
-      if [[ -n "$user" ]]; then
-          # Cek apakah user ada di JSON aturan
-          if ! echo "$rule_users_all_json" | jq -e --arg u "$user" '.[] | select(. == $u)' > /dev/null; then
-              # Jika TIDAK ADA, masukkan ke daftar TERSEDIA
-              users_tersedia_proto+=$(printf "%s\n" "$proto")
-              users_tersedia_user+=$(printf "%s\n" "$user")
-          fi
+      [[ -z "$user" ]] && continue
+      # cek apakah user ada di blocked_users
+      if ! echo "$blocked_users" | grep -qx "$user"; then
+          users_tersedia_proto+="$proto\n"
+          users_tersedia_user+="$user\n"
       fi
-  done < <(echo "$all_users_map") # Feed map into loop
-  
-  # Tampilkan 3 kolom
-  print_three_columns "Protokol" "$users_tersedia_proto" \
-                     "User belum diblokir" "$users_tersedia_user" \
-                     "User sudah diblokir" "$rule_users_display"
-  
+  done < <(echo "$all_users_map")
+
+  # Build daftar user yang sudah diblokir (hanya user yang ada di ledger)
+  while read -r bu; do
+      [[ -z "$bu" ]] && continue
+      local proto
+      proto=$(echo "$all_users_map" | awk -F'|' -v uu="$bu" '$1==uu {print $2; exit}')
+      [[ -z "$proto" ]] && proto="-"
+      blocked_proto_list+="$proto\n"
+      blocked_user_list+="$bu\n"
+  done <<< "$blocked_users"
+
+  # Gabungkan proto:user untuk kolom kanan
+  local blocked_combined=""
+  paste -d':' <(echo -e "$blocked_proto_list") <(echo -e "$blocked_user_list") 2>/dev/null \
+    | while read -r line; do
+        [[ -n "$line" ]] && blocked_combined+="$line\n"
+      done
+  # Perlu echo supaya var terbawa ke luar subshell
+  blocked_combined=$(echo -e "$blocked_combined")
+
+  # Tampilkan tabel 3 kolom
+  print_three_columns "Protokol" "$(echo -e "$users_tersedia_proto")" \
+                      "User belum diblokir" "$(echo -e "$users_tersedia_user")" \
+                      "User sudah diblokir (proto:user)" "$blocked_combined"
+
   # --- Menu Aksi ---
   echo ""
   print_menu_option "1)" "Tambah User ke Daftar Blokir"
@@ -1584,65 +2015,75 @@ rute_blokir_akun() {
     1) # Tambah
       print_menu_prompt "Masukkan User/Email yang akan diblokir (0 untuk batal)" user_baru
       if [[ "$user_baru" == "0" ]]; then return 0; fi
-      if [[ -z "$user_baru" ]]; then print_error "Input tidak boleh kosong."; pause_for_enter; return 1; fi
+      if [[ -z "$user_baru" ]]; then
+        print_error "Input tidak boleh kosong."
+        pause_for_enter; return 1
+      fi
 
-      if echo "$rule_users_all_json" | jq -e --arg u "$user_baru" '.[] | select(. == $u)' > /dev/null; then
+      if echo "$rule_users_all_json" | jq -e --arg u "$user_baru" '.[] | select(. == $u)' > /dev/null 2>&1; then
         print_warn "User '$user_baru' sudah ada dalam daftar blokir."
         pause_for_enter
         return 1
       fi
 
-      jq --arg user_baru "$user_baru" '(.routing.rules[] | select(.outboundTag == "blocked" and .user != null) | .user) |= (. + [$user_baru] | unique)' "$CONFIG" > "$tmp"
-      
-      if [ $? -eq 0 ]; then
+      # Tambah user ke semua rule blocked yang punya array .user
+      if jq --arg user_baru "$user_baru" '
+        (.routing.rules[]
+          | select(.outboundTag == "blocked"
+                   and (.user|type=="array"))
+          | .user) |= (. + [$user_baru] | unique)
+      ' "$CONFIG" > "$tmp"; then
         mv "$tmp" "$CONFIG"
         print_info "User '$user_baru' berhasil ditambahkan ke daftar blokir."
         restart_xray
       else
-        print_error "Gagal memperbarui konfigurasi. Periksa $tmp"
+        print_error "Gagal memperbarui konfigurasi."
         rm -f "$tmp"
       fi
       ;;
-      
+
     2) # Hapus
       print_menu_prompt "Masukkan User/Email yang akan di-UNBLOK (0 untuk batal)" user_hapus
       if [[ "$user_hapus" == "0" ]]; then return 0; fi
-      if [[ -z "$user_hapus" ]]; then print_error "Input tidak boleh kosong."; pause_for_enter; return 1; fi
+      if [[ -z "$user_hapus" ]]; then
+        print_error "Input tidak boleh kosong."
+        pause_for_enter; return 1
+      fi
 
-      # --- UPDATE DISINI: Tambahkan "quota" ke proteksi agar tidak dihapus manual ---
+      # Lindungi user system
       if [[ "$user_hapus" == "user2" || "$user_hapus" == "quota" ]]; then
           print_error "User system '$user_hapus' tidak dapat dihapus dari daftar blokir."
           pause_for_enter
           return 1
       fi
 
-      if ! echo "$rule_users_all_json" | jq -e --arg u "$user_hapus" '.[] | select(. == $u)' > /dev/null; then
+      if ! echo "$rule_users_all_json" | jq -e --arg u "$user_hapus" '.[] | select(. == $u)' > /dev/null 2>&1; then
         print_warn "User '$user_hapus' tidak ditemukan dalam daftar blokir."
         pause_for_enter
         return 1
       fi
 
-      jq --arg user_hapus "$user_hapus" '(.routing.rules[] | select(.outboundTag == "blocked" and .user != null) | .user) |= (del(.[] | select(. == $user_hapus)))' "$CONFIG" > "$tmp"
-
-      if [ $? -eq 0 ]; then
+      if jq --arg user_hapus "$user_hapus" '
+        (.routing.rules[]
+          | select(.outboundTag == "blocked"
+                   and (.user|type=="array"))
+          | .user) |= (del(.[] | select(. == $user_hapus)))
+      ' "$CONFIG" > "$tmp"; then
         mv "$tmp" "$CONFIG"
         print_info "User '$user_hapus' berhasil di-UNBLOK (dihapus dari daftar blokir)."
         restart_xray
       else
-        print_error "Gagal memperbarui konfigurasi. Periksa $tmp"
+        print_error "Gagal memperbarui konfigurasi."
         rm -f "$tmp"
       fi
       ;;
-      
+
     0) return 0 ;;
     *) print_error "Pilihan tidak valid."; sleep 1 ;;
   esac
   
   pause_for_enter
 }
-# ======================================================================
-# --- AKHIR PERUBAHAN ---
-# ======================================================================
 
 
 # Poin 5: Fungsi atur rute website yang sudah ditentukan ke warp
@@ -1744,41 +2185,68 @@ rute_toggle_semua() {
   pause_for_enter
 }
 
-# ======================================================================
-# --- PERUBAHAN: rute_tambah_user_warp (Tambah/Hapus) ---
-# ======================================================================
 rute_tambah_user_warp() {
   clear
   print_header "Tambah/Hapus User dari Rute WARP"
   
-  # Ambil SEMUA user dari aturan
-  local rule_users_all_json=$(jq -r '(.routing.rules[] | select(.outboundTag == "warp" and .user != null) | .user) // []' "$CONFIG")
+  # Ambil SEMUA user dari aturan WARP yang punya array .user
+  local rule_users_all_json
+  rule_users_all_json=$(jq -r '
+    [
+      .routing.rules[]
+      | select(.outboundTag == "warp"
+               and (.user|type=="array"))
+      | .user
+    ] | add // []' "$CONFIG")
+
   # Filter user default "user1" HANYA untuk tampilan
-  local rule_users_display=$(echo "$rule_users_all_json" | jq -r '[.[] | select(. != "user1")] | .[]')
+  local warp_users
+  warp_users=$(echo "$rule_users_all_json" | jq -r '[.[] | select(. != "user1")] | .[]' 2>/dev/null || true)
   
-  # Siapkan list untuk 3 kolom
+  # Panggil map user|proto
+  local all_users_map
+  all_users_map=$(get_all_created_users_map)
+  
+  # Siapkan list untuk user yang BELUM ke WARP
   local users_tersedia_proto=""
   local users_tersedia_user=""
   
-  # Panggil map user|proto
-  local all_users_map=$(get_all_created_users_map)
-  
+  # Siapkan list untuk user yang SUDAH ke WARP (dengan proto)
+  local warp_proto_list=""
+  local warp_user_list=""
+
+  # Build daftar user belum ke WARP
   while IFS='|' read -r user proto; do
-      if [[ -n "$user" ]]; then
-          # Cek apakah user ada di JSON aturan
-          if ! echo "$rule_users_all_json" | jq -e --arg u "$user" '.[] | select(. == $u)' > /dev/null; then
-              # Jika TIDAK ADA, masukkan ke daftar TERSEDIA
-              users_tersedia_proto+=$(printf "%s\n" "$proto")
-              users_tersedia_user+=$(printf "%s\n" "$user")
-          fi
+      [[ -z "$user" ]] && continue
+      if ! echo "$warp_users" | grep -qx "$user"; then
+          users_tersedia_proto+="$proto\n"
+          users_tersedia_user+="$user\n"
       fi
-  done < <(echo "$all_users_map") # Feed map into loop
-  
+  done < <(echo "$all_users_map")
+
+  # Build daftar user sudah ke WARP (hanya yang ada di ledger)
+  while read -r wu; do
+      [[ -z "$wu" ]] && continue
+      local proto
+      proto=$(echo "$all_users_map" | awk -F'|' -v uu="$wu" '$1==uu {print $2; exit}')
+      [[ -z "$proto" ]] && proto="-"
+      warp_proto_list+="$proto\n"
+      warp_user_list+="$wu\n"
+  done <<< "$warp_users"
+
+  # Gabungkan proto:user untuk kolom kanan
+  local warp_combined=""
+  paste -d':' <(echo -e "$warp_proto_list") <(echo -e "$warp_user_list") 2>/dev/null \
+    | while read -r line; do
+        [[ -n "$line" ]] && warp_combined+="$line\n"
+      done
+  warp_combined=$(echo -e "$warp_combined")
+
   # Tampilkan 3 kolom
-  print_three_columns "Protokol" "$users_tersedia_proto" \
-                     "User belum ke WARP" "$users_tersedia_user" \
-                     "User sudah ke WARP" "$rule_users_display"
-  
+  print_three_columns "Protokol" "$(echo -e "$users_tersedia_proto")" \
+                      "User belum ke WARP" "$(echo -e "$users_tersedia_user")" \
+                      "User sudah ke WARP (proto:user)" "$warp_combined"
+
   # --- Menu Aksi ---
   echo ""
   print_menu_option "1)" "Tambah User ke Rute WARP"
@@ -1787,75 +2255,81 @@ rute_tambah_user_warp() {
   print_menu_option "0)" "Kembali"
   
   print_menu_prompt "Pilih Opsi (0-2)" sub_opt
-  
   local tmp="$CONFIG.tmp.$$"
 
   case "$sub_opt" in
     1) # Tambah
-      print_menu_prompt "Masukkan User/Email yang akan dirutekan ke WARP (0 untuk batal)" user_baru
+      print_menu_prompt "Masukkan User/Email yang akan diarahkan ke WARP (0 untuk batal)" user_baru
       if [[ "$user_baru" == "0" ]]; then return 0; fi
-      if [[ -z "$user_baru" ]]; then print_error "Input tidak boleh kosong."; pause_for_enter; return 1; fi
+      if [[ -z "$user_baru" ]]; then
+        print_error "Input tidak boleh kosong."
+        pause_for_enter; return 1
+      fi
 
-      if echo "$rule_users_all_json" | jq -e --arg u "$user_baru" '.[] | select(. == $u)' > /dev/null; then
-        print_warn "User '$user_baru' sudah ada dalam daftar rute WARP."
+      if echo "$rule_users_all_json" | jq -e --arg u "$user_baru" '.[] | select(. == $u)' > /dev/null 2>&1; then
+        print_warn "User '$user_baru' sudah ada di rute WARP."
         pause_for_enter
         return 1
       fi
 
-      jq --arg user_baru "$user_baru" '(.routing.rules[] | select(.outboundTag == "warp" and .user != null) | .user) |= (. + [$user_baru] | unique)' "$CONFIG" > "$tmp"
-      
-      if [ $? -eq 0 ]; then
+      if jq --arg user_baru "$user_baru" '
+        (.routing.rules[]
+          | select(.outboundTag == "warp"
+                   and (.user|type=="array"))
+          | .user) |= (. + [$user_baru] | unique)
+      ' "$CONFIG" > "$tmp"; then
         mv "$tmp" "$CONFIG"
         print_info "User '$user_baru' berhasil ditambahkan ke rute WARP."
         restart_xray
       else
-        print_error "Gagal memperbarui konfigurasi. Periksa $tmp"
+        print_error "Gagal memperbarui konfigurasi."
         rm -f "$tmp"
       fi
       ;;
-      
+
     2) # Hapus
       print_menu_prompt "Masukkan User/Email yang akan DIHAPUS dari rute WARP (0 untuk batal)" user_hapus
       if [[ "$user_hapus" == "0" ]]; then return 0; fi
-      if [[ -z "$user_hapus" ]]; then print_error "Input tidak boleh kosong."; pause_for_enter; return 1; fi
-      
-      if [[ "$user_hapus" == "user1" ]]; then
-          print_error "User default 'user1' tidak dapat dihapus dari rute WARP."
-          pause_for_enter
-          return 1
+      if [[ -z "$user_hapus" ]]; then
+        print_error "Input tidak boleh kosong."
+        pause_for_enter; return 1
       fi
 
-      if ! echo "$rule_users_all_json" | jq -e --arg u "$user_hapus" '.[] | select(. == $u)' > /dev/null; then
-        print_warn "User '$user_hapus' tidak ditemukan dalam daftar rute WARP."
+      # Lindungi user default
+      if [[ "$user_hapus" == "user1" ]]; then
+        print_error "User default 'user1' tidak dapat dihapus dari rute WARP."
         pause_for_enter
         return 1
       fi
 
-      jq --arg user_hapus "$user_hapus" '(.routing.rules[] | select(.outboundTag == "warp" and .user != null) | .user) |= (del(.[] | select(. == $user_hapus)))' "$CONFIG" > "$tmp"
+      if ! echo "$rule_users_all_json" | jq -e --arg u "$user_hapus" '.[] | select(. == $u)' > /dev/null 2>&1; then
+        print_warn "User '$user_hapus' tidak ditemukan dalam rute WARP."
+        pause_for_enter
+        return 1
+      fi
 
-      if [ $? -eq 0 ]; then
+      if jq --arg user_hapus "$user_hapus" '
+        (.routing.rules[]
+          | select(.outboundTag == "warp"
+                   and (.user|type=="array"))
+          | .user) |= (del(.[] | select(. == $user_hapus)))
+      ' "$CONFIG" > "$tmp"; then
         mv "$tmp" "$CONFIG"
         print_info "User '$user_hapus' berhasil DIHAPUS dari rute WARP."
         restart_xray
       else
-        print_error "Gagal memperbarui konfigurasi. Periksa $tmp"
+        print_error "Gagal memperbarui konfigurasi."
         rm -f "$tmp"
       fi
       ;;
-      
+
     0) return 0 ;;
     *) print_error "Pilihan tidak valid."; sleep 1 ;;
   esac
-  
+
   pause_for_enter
 }
-# ======================================================================
-# --- AKHIR PERUBAHAN ---
-# ======================================================================
 
-# ======================================================================
-# --- PERUBAHAN: rute_tambah_protokol_warp (Tambah/Hapus) ---
-# ======================================================================
 rute_tambah_protokol_warp() {
   clear
   # --- Judul Diubah ---
@@ -1962,10 +2436,6 @@ rute_tambah_protokol_warp() {
   
   pause_for_enter
 }
-# ======================================================================
-# --- AKHIR PERUBAHAN ---
-# ======================================================================
-
 
 # Poin 2: Sub-menu untuk "Rute Manajemen"
 aksi_rute_manajemen() {
@@ -1994,10 +2464,6 @@ aksi_rute_manajemen() {
   done
 }
 
-# ======================================================================
-# --- MENU UTAMA (DIPERBARUI) ---
-# ======================================================================
-
 main_menu(){
   while true; do
     print_banner
@@ -2013,10 +2479,11 @@ main_menu(){
     print_menu_option "6)" "Ganti domain"
     print_menu_option "7)" "Tambah host (Subdomain)"
     print_menu_option "8)" "About"
+    print_menu_option "9)" "Sistem Kuota Akun"
     echo ""
     print_menu_option "0)" "Keluar"
     
-    print_menu_prompt "Pilih Opsi (0-8)" m
+    print_menu_prompt "Pilih Opsi (0-9)" m
     
     case "$m" in
       1) aksi_buat ;;
@@ -2027,20 +2494,23 @@ main_menu(){
       6) aksi_ganti_domain ;;
       7) aksi_tambah_host ;;
       8) aksi_about ;;
+      9) aksi_kuota ;;
       0) exit 0 ;;
       *) print_error "Pilihan tidak valid."; sleep 1 ;;
     esac
   done
 }
-# ======================================================================
-# --- AKHIR PERUBAHAN ---
-# ======================================================================
 
 # ====== Bootstrap ======
 need_root
-# Pastikan 'paste' dan 'comm' ada
-# --- DIPERBARUI: Menambahkan uptime, free, dan numfmt ---
 need_cmd jq awk sed grep systemctl nginx date base64 curl openssl paste comm mktemp uptime free numfmt
 ensure_dirs
+
+# Mode non-interaktif untuk cron: cek & blokir kuota
+if [[ "${1:-}" == "--cek-kuota" ]]; then
+  quota_enforce_now
+  exit 0
+fi
+
 main_menu
 
