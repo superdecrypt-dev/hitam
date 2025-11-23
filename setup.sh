@@ -991,7 +991,7 @@ generate_configs() {
           "geosite:netflix",
           "geosite:reddit"
         ],
-        "outboundTag": "warp",
+        "outboundTag": "direct",
         "type": "field"
       },
       {
