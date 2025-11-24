@@ -1151,6 +1151,7 @@ cat << 'EOF' > /usr/local/bin/xp
 CONFIG="/usr/local/etc/xray/config.json"
 ACCOUNTS_DIR="/usr/local/etc/xray/accounts"
 LOG_FILE="/var/log/xray/xp.log"
+QUOTA_DB="/usr/local/etc/xray/quota.db" 
 
 # Fungsi Hapus Client Standar (VMess/VLESS/Trojan/SS)
 del_client_std() { 
@@ -1185,6 +1186,21 @@ del_client_acct() {
 # Log Function
 log_xp() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+}
+
+remove_quota_for_user() {
+    local user="$1"
+    local db="$QUOTA_DB"
+
+    [[ -z "$user" ]] && return 0
+    [[ -z "$db" ]] && return 0
+
+    if [[ -f "$db" ]]; then
+        local tmpq="${db}.tmp.$$"
+        grep -v "^$user|" "$db" > "$tmpq" 2>/dev/null || true
+        mv "$tmpq" "$db"
+        log_xp "quota: entri untuk user '$user' dihapus dari $db (jika ada)."
+    fi
 }
 
 # --- MAIN LOGIC ---
@@ -1224,6 +1240,9 @@ for proto in vmess vless trojan shadowsocks http socks; do
                 # Kita tidak bisa hapus baris saat sedang membaca file yang sama dalam loop
                 # Jadi kita simpan user ke array atau file temp, 
                 # TAPI cara simpel: grep -v langsung ke file tmp untuk db
+                
+                # 3. Hapus entri kuota untuk user ini
+                remove_quota_for_user "$user"
                 
                 # Flag restart
                 RESTART_NEEDED=1
