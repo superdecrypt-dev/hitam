@@ -1360,9 +1360,8 @@ show_summary() {
 install_api_backend() {
     print_header "Langkah 13: Setup Backend API Web Panel"
 
-    # 1. Install Python & Flask
-    run_task "Menginstal Python3 & pip" "apt-get update -y && apt-get install -y python3 python3-pip"
-    run_task "Menginstal modul Flask" "pip3 install flask --break-system-packages"
+    # 1. Install Python & Flask dari repo distro (bukan pip)
+    run_task "Menginstal Python3 & Flask" "apt-get update -y && apt-get install -y python3 python3-pip python3-flask"
 
     # 2. Tuliskan skrip API
     run_task "Membuat skrip backend API" "mkdir -p /usr/local/etc/xray"
