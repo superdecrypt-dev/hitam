@@ -1085,8 +1085,10 @@ server {
         proxy_pass http://\$xray_upstream\$xray_ws_path;
     }
 
-    location / {
-        return 404;
+    location /panel/ {
+        alias /usr/local/etc/xray/webpanel/;
+        index index.html;
+        autoindex off;
     }
 }
 EOF
@@ -1298,12 +1300,12 @@ install_quota_cron() {
     # Hapus entry lama (kalau ada), lalu tambahkan yang baru
     # Ini pakai crontab user root (installer memang dijalankan sebagai root)
     (crontab -l 2>/dev/null | grep -v "/usr/local/bin/menu --cek-kuota" ; \
-     echo "*/5 * * * * /usr/local/bin/menu --cek-kuota >/dev/null 2>&1") | crontab -
+     echo "*/1 * * * * /usr/local/bin/menu --cek-kuota >/dev/null 2>&1") | crontab -
 
     # Restart service cron supaya aman
     run_task "Restart service cron (untuk cron kuota)" "systemctl restart cron"
 
-    print_info "Cron cek kuota berhasil dijadwalkan (*/5 menit)."
+    print_info "Cron cek kuota berhasil dijadwalkan (*/1 menit)."
 }
 
 # --- 12. Ringkasan ---

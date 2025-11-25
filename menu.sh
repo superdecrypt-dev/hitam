@@ -17,6 +17,10 @@ QUOTA_DB="$ASSET_DIR/quota.db"
 XRAY_BIN="/usr/local/bin/xray"
 XRAY_API_SERVER="127.0.0.1:10000"
 
+# Web panel
+WEB_PANEL_DIR="$ASSET_DIR/webpanel"
+WEB_PANEL_ACCOUNTS_DIR="$WEB_PANEL_DIR/accounts"
+
 # ====== Konfigurasi Cloudflare & Domain Tersedia ======
 CF_TOKEN="qz31v4icXAb7593V_cafEHPEvskw5V8rWES95AZx"
 AVAILABLE_DOMAINS=("vip01.qzz.io" "vip02.qzz.io" "vip03.qzz.io" "vip04.qzz.io")
@@ -437,7 +441,7 @@ quota_set_user(){
 # Buka blokir akun yang diblokir oleh sistem kuota
 quota_unblock_user(){
   clear
-  print_header "BUKA BLOKIR AKUN KUOTA"
+  print_header "BUKA NONAKTIFKAN AKUN KUOTA"
 
   # Ambil semua user dari rule 'blocked' yang dipakai sistem kuota (mengandung "quota" di array .user)
   local quota_rule_users_json
@@ -455,7 +459,7 @@ quota_unblock_user(){
   quota_rule_users=$(echo "$quota_rule_users_json" | jq -r '.[]' 2>/dev/null | grep -v '^quota$' || true)
 
   if [[ -z "$quota_rule_users" ]]; then
-    print_warn "Tidak ada akun yang sedang diblokir oleh sistem kuota."
+    print_warn "Tidak ada akun yang sedang dinonaktifkan oleh sistem kuota."
     pause_for_enter
     return 0
   fi
@@ -476,11 +480,11 @@ quota_unblock_user(){
     blocked_user_list+="$u\n"
   done <<< "$quota_rule_users"
 
-  echo -e "${B_WHITE}Daftar akun yang diblokir oleh sistem kuota:${RESET}"
+  echo -e "${B_WHITE}Daftar akun yang dinonaktifkan oleh sistem kuota:${RESET}"
   print_side_by_side "Protokol" "$(echo -e "$blocked_proto_list")" \
-                     "User diblokir kuota" "$(echo -e "$blocked_user_list")"
+                     "User dinonaktifkan" "$(echo -e "$blocked_user_list")"
 
-  print_menu_prompt "Masukkan username yang akan di-UNBLOK (0 untuk batal)" q_user
+  print_menu_prompt "Masukkan username yang akan di aktifkan (0 untuk batal)" q_user
   if [[ "$q_user" == "0" ]]; then return 0; fi
   if [[ -z "$q_user" ]]; then
     print_error "Username tidak boleh kosong."
@@ -490,7 +494,7 @@ quota_unblock_user(){
 
   # Pastikan username memang ada di daftar blokir kuota
   if ! echo "$quota_rule_users" | grep -qx "$q_user"; then
-    print_warn "User '$q_user' tidak ditemukan dalam daftar blokir kuota."
+    print_warn "User '$q_user' tidak ditemukan akun berstatus nonaktif karena kuota."
     pause_for_enter
     return 1
   fi
@@ -505,7 +509,7 @@ quota_unblock_user(){
       | .user) |= (del(.[] | select(. == $user)))
   ' "$CONFIG" > "$tmp"; then
     mv "$tmp" "$CONFIG"
-    print_info "User '$q_user' berhasil di-UNBLOK dari blokir kuota."
+    print_info "User '$q_user' berhasil di aktifkan."
     restart_xray
   else
     rm -f "$tmp"
@@ -575,11 +579,11 @@ quota_delete_user(){
       | .user) |= (del(.[] | select(. == $user)))
   ' "$CONFIG" > "$cfg_tmp"; then
     mv "$cfg_tmp" "$CONFIG"
-    print_info "User '$q_user' juga dihapus dari daftar blokir kuota."
+    print_info "User '$q_user' juga dihapus dari daftar nonaktifkuota."
     restart_xray
   else
     rm -f "$cfg_tmp"
-    print_warn "Gagal memperbarui konfigurasi Xray saat menghapus blokir kuota user '$q_user'."
+    print_warn "Gagal memperbarui konfigurasi Xray saat menghapus status nonaktif kuota user '$q_user'."
   fi
 
   pause_for_enter
@@ -597,6 +601,9 @@ quota_list_status(){
 
   # Update pemakaian dulu
   quota_update_usage
+
+  # Sinkronkan tampilan kuota di web panel
+  sync_quota_to_webpanel
 
   printf "  %-15s | %-12s | %-12s | %-12s | %-8s\n" "User" "Kuota" "Terpakai" "Sisa" "Status"
   echo   "  -------------------------------------------------------------------------------"
@@ -622,7 +629,7 @@ quota_list_status(){
 # Cek kuota dan blokir akun yang habis
 quota_enforce_now(){
   clear
-  print_header "CEK & BLOKIR AKUN HABIS KUOTA"
+  print_header "CEK & NONAKTIFKAN AKUN HABIS KUOTA"
 
   if [[ ! -s "$QUOTA_DB" ]]; then
     print_warn "Tidak ada akun yang diatur kuotanya."
@@ -632,6 +639,9 @@ quota_enforce_now(){
   # Update pemakaian dulu
   quota_update_usage
 
+  # Sinkronkan tampilan kuota di web panel
+  sync_quota_to_webpanel
+
   local need_restart=0
 
   while IFS='|' read -r u q used last_up last_down; do
@@ -640,10 +650,10 @@ quota_enforce_now(){
 
     if (( used >= q )); then
       if quota_block_user_norestart "$u"; then
-        print_warn "Kuota user '$u' HABIS → ditambahkan ke daftar blokir."
+        print_warn "Kuota user '$u' HABIS → ditambahkan ke daftar nonaktif."
         need_restart=1
       else
-        print_info "User '$u' sudah dalam daftar blokir."
+        print_info "User '$u' sudah dalam daftar nonaktif."
       fi
     fi
   done < "$QUOTA_DB"
@@ -651,7 +661,7 @@ quota_enforce_now(){
   if (( need_restart == 1 )); then
     restart_xray
   else
-    print_info "Tidak ada perubahan pada daftar blokir (belum ada kuota yang habis)."
+    print_info "Tidak ada perubahan pada daftar nonaktif (belum ada kuota yang habis)."
   fi
 
   pause_for_enter
@@ -782,16 +792,21 @@ print_side_by_side() {
 ensure_dirs(){
   local protos=("vmess" "vless" "trojan" "http" "socks" "shadowsocks")
   for p in "${protos[@]}"; do
+    # DB + txt akun
     if [[ ! -d "$ACCOUNTS_DIR/$p" ]]; then
       mkdir -p "$ACCOUNTS_DIR/$p"
     fi
     if [[ ! -f "$ACCOUNTS_DIR/$p.db" ]]; then
       touch "$ACCOUNTS_DIR/$p.db"
     fi
+
+    # HTML akun
+    mkdir -p "$WEB_PANEL_ACCOUNTS_DIR/$p"
   done
   
   if [[ ! -f "$HOSTS_FILE" ]]; then touch "$HOSTS_FILE"; fi
-  if [[ ! -f "$QUOTA_DB" ]]; then touch "$QUOTA_DB"; fi   # <<--- BARU
+  if [[ ! -f "$QUOTA_DB" ]]; then touch "$QUOTA_DB"; fi
+  mkdir -p "$WEB_PANEL_DIR"
 }
 
 # ====== Guard ======
@@ -859,10 +874,21 @@ get_ss_server_psk() {
 }
 
 restart_xray(){
+  # Restart Nginx, Xray, dan Wireproxy setiap ada perubahan penting
+  if ! run_task "Me-restart layanan Nginx" "systemctl restart nginx"; then
+      print_warn "Layanan Nginx gagal restart. Cek status."
+  fi
+
   if ! run_task "Me-restart layanan Xray" "systemctl restart xray"; then
       print_warn "Layanan Xray gagal restart. Cek status."
   fi
-  # Beri waktu Xray untuk stabil
+
+  # Wireproxy opsional: kalau belum terpasang, abaikan error-nya
+  if ! run_task "Me-restart layanan Wireproxy" "systemctl restart wireproxy"; then
+      print_warn "Layanan Wireproxy gagal restart (abaikan jika belum terpasang)."
+  fi
+
+  # Kasih jeda sedikit biar semua service stabil
   sleep 0.5
 }
 
@@ -1105,6 +1131,72 @@ show_account_list_by_proto(){
   echo "  ---------------------------------------------"
 }
 
+refresh_account_html(){
+  local proto="$1"
+  local user="$2"
+
+  local domain
+  domain="$(get_domain)"
+
+  local db="$ACCOUNTS_DIR/$proto.db"
+  [[ ! -f "$db" ]] && return 1
+
+  local line
+  line=$(grep "^$user|" "$db" | head -n1 || true)
+  [[ -z "$line" ]] && return 1
+
+  local secret created exp quota
+  secret=$(echo "$line"  | cut -d'|' -f2)
+  exp=$(echo "$line"     | cut -d'|' -f3)
+  created=$(echo "$line" | cut -d'|' -f4)
+  quota=$(echo "$line"   | cut -d'|' -f5)
+
+  local path
+  path="$(get_ws_path "$proto")"
+
+  local link_tls="" link_nontls="" notes=""
+
+  case "$proto" in
+    vmess)
+      link_tls="$(vmess_link_tls "$secret" "$domain" "$path" "$user")"
+      link_nontls="$(vmess_link_nontls "$secret" "$domain" "$path" "$user")"
+      ;;
+    vless)
+      link_tls="$(vless_link_tls "$secret" "$domain" "$path" "$user")"
+      link_nontls="$(vless_link_nontls "$secret" "$domain" "$path" "$user")"
+      ;;
+    trojan)
+      link_tls="$(trojan_link_tls "$secret" "$domain" "$path" "$user")"
+      link_nontls="$(trojan_link_nontls "$secret" "$domain" "$path" "$user")"
+      ;;
+    shadowsocks)
+      link_tls="$(shadowsocks_link_tls "$secret" "$domain" "$path" "$user")"
+      link_nontls="$(shadowsocks_link_nontls "$secret" "$domain" "$path" "$user")"
+      ;;
+    http)
+      link_tls="$(http_link_tls "$secret" "$domain" "$user" "$path")"
+      link_nontls="$(http_link_nontls "$secret" "$domain" "$user" "$path")"
+      ;;
+    socks)
+      link_tls="$(socks_link_tls "$secret" "$domain" "$user" "$path")"
+      link_nontls="$(socks_link_nontls "$secret" "$domain" "$user" "$path")"
+      ;;
+  esac
+
+  render_account_html "$proto" "$user" "$domain" "$path" "$secret" "$exp" "$created" "$link_tls" "$link_nontls"
+}
+
+delete_account_html(){
+  local proto="$1"
+  local user="$2"
+
+  local f="$WEB_PANEL_ACCOUNTS_DIR/$proto/$user.html"
+  if [[ -f "$f" ]]; then
+    rm -f "$f"
+    print_info "Halaman web akun dihapus: $f"
+  fi
+}
+
 # ====== FUNGSI: UPDATE AKUN SETELAH GANTI DOMAIN (UPDATED) ======
 update_all_accounts_domain(){
   local new_domain="$1"
@@ -1158,6 +1250,9 @@ update_all_accounts_domain(){
                ;;
            esac
 
+# ====== PANEL WEB: GENERATE ULANG HALAMAN HTML ======
+         render_account_html "$proto" "$user" "$new_domain" "$path" "$secret" "$exp" "$created" "$link_tls" "$link_nontls"
+
            # Tulis ulang file
            cat <<EOF > "$file"
 =========================================
@@ -1170,6 +1265,7 @@ Password/ID: $secret
 Path WS    : /$path
 Expired    : $exp
 Created    : $created
+Web Panel  : https://$new_domain/panel/accounts/$proto/$user.html
 
 --- Link TLS (Port 443) ---
 ${link_tls}
@@ -1185,6 +1281,7 @@ EOF
       done
     fi
   done
+  rebuild_web_index
 }
 
 # ====== FUNGSI: UPDATE CNAME CLOUDFLARE ======
@@ -1434,6 +1531,7 @@ Password/ID: $secret
 Path WS    : /$path
 Expired    : $exp
 Created    : $created
+Web Panel  : https://$domain/panel/accounts/$proto/$user.html
 
 --- Link TLS (Port 443) ---
 ${link_tls}
@@ -1445,10 +1543,15 @@ ${notes}
 =========================================
 EOF
 
+  # === baru: generate halaman HTML & index web panel ===
+  render_account_html "$proto" "$user" "$domain" "$path" "$secret" "$exp" "$created" "$link_tls" "$link_nontls"
+  rebuild_web_index
+
   clear
   cat "$file_out"
   echo ""
   print_info "Data disimpan di: $file_out"
+  print_info "Halaman web akun: https://$domain/panel/accounts/$proto/$user.html"
   pause_for_enter
 }
 
@@ -1515,6 +1618,10 @@ aksi_hapus(){
       print_info "Entri kuota untuk user '$user' dihapus dari quota.db (jika ada)."
   fi
   
+  # ====== PANEL WEB: HAPUS HALAMAN HTML + UPDATE INDEX ======
+  delete_account_html "$proto" "$user"
+  rebuild_web_index
+  
   print_info "Akun $user ($proto) berhasil dihapus."
   pause_for_enter
 }
@@ -1573,6 +1680,11 @@ aksi_perpanjang(){
   fi
 
   ledger_extend "$proto" "$user" "$days"
+  restart_xray
+  # ====== PANEL WEB: REFRESH HALAMAN AKUN + INDEX ======
+  refresh_account_html "$proto" "$user"
+  rebuild_web_index
+  
   pause_for_enter
 }
 
@@ -1603,6 +1715,7 @@ aksi_daftar_akun(){
   # Update pemakaian kuota dulu kalau ada DB
   if [[ -s "$QUOTA_DB" ]]; then
     quota_update_usage
+    sync_quota_to_webpanel
   fi
 
   printf "  %-4s | %-12s | %-15s | %-12s | %-12s | %-18s\n" \
@@ -1670,6 +1783,439 @@ aksi_daftar_akun(){
   pause_for_enter
 }
 
+render_account_html() {
+  local proto="$1"
+  local user="$2"
+  local domain="$3"
+  local path="$4"        # tanpa slash depan, mis: vmess-ws
+  local secret="$5"
+  local exp="$6"
+  local created="$7"
+  local link_tls="$8"
+  local link_nontls="$9"
+
+# Info kuota + status aktif/nonaktif
+  local quota_info="Unlimited"
+  local status_label="AKTIF"
+  local status_class="status-on"
+
+  if [[ -s "$QUOTA_DB" ]]; then
+    local line
+    line=$(grep "^$user|" "$QUOTA_DB" 2>/dev/null | head -n1 || true)
+    if [[ -n "$line" ]]; then
+      local q used
+      q=$(echo "$line" | cut -d'|' -f2)
+      used=$(echo "$line" | cut -d'|' -f3)
+      [[ -z "$used" ]] && used=0
+
+      if (( q > 0 )); then
+        # Kuota terbatas: tampilkan "terpakai / total"
+        quota_info="$(bytes_to_human "$used") / $(bytes_to_human "$q")"
+        if (( used >= q )); then
+          status_label="NONAKTIF"
+          status_class="status-off"
+        else
+          status_label="AKTIF"
+          status_class="status-on"
+        fi
+      else
+        # q == 0 → unlimited
+        quota_info="Unlimited"
+        status_label="AKTIF"
+        status_class="status-on"
+      fi
+    fi
+  fi
+
+  local extra_note=""
+    case "$proto" in
+      shadowsocks)
+        extra_note="<div class=\"footer-note\">Rekomendasi: gunakan aplikasi <strong>Netmod / Netmod Syna</strong> untuk koneksi <strong>Shadowsocks WS 2022</strong>.</div>"
+        ;;
+      http|socks)
+        extra_note="<div class=\"footer-note\">Gunakan aplikasi <strong>Exclave</strong>. Atur network ke <strong>WebSocket</strong> dan isi <strong>Path Websocket</strong> manual: <code>/$path</code>.</div>"
+        ;;
+    esac
+
+  local out="$WEB_PANEL_ACCOUNTS_DIR/$proto/$user.html"
+
+  cat > "$out" <<EOF
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Account $user – ${proto^^}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f172a;
+      color: #e5e7eb;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      max-width: 720px;
+      width: 100%;
+      background: rgba(15,23,42,0.9);
+      border-radius: 16px;
+      padding: 24px 24px 20px;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+      border: 1px solid rgba(148,163,184,0.4);
+      backdrop-filter: blur(16px);
+    }
+    .proto-pill {
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      padding:4px 10px;
+      border-radius:999px;
+      background:rgba(59,130,246,0.1);
+      border:1px solid rgba(59,130,246,0.5);
+      font-size:12px;
+      letter-spacing:0.06em;
+      text-transform:uppercase;
+      color:#93c5fd;
+    }
+    .header-row {
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:10px;
+      flex-wrap:wrap;
+    }
+    .status-pill {
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      padding:2px 10px;
+      border-radius:999px;
+      font-size:11px;
+      text-transform:uppercase;
+      letter-spacing:0.08em;
+    }
+    .status-on {
+      background:rgba(34,197,94,0.15);
+      border:1px solid rgba(34,197,94,0.7);
+      color:#bbf7d0;
+    }
+    .status-off {
+      background:rgba(248,113,113,0.15);
+      border:1px solid rgba(248,113,113,0.7);
+      color:#fecaca;
+    }
+    .footer-note {
+      margin-top:10px;
+      font-size:11px;
+      color:#e5e7eb;
+      background:#111827;
+      border-radius:10px;
+      padding:8px 10px;
+      border:1px dashed rgba(148,163,184,0.7);
+    }
+    .footer-note code {
+      font-size:11px;
+    }
+    h1 {
+      margin: 12px 0 4px;
+      font-size: 22px;
+    }
+    .meta {
+      font-size: 13px;
+      color: #9ca3af;
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px 18px;
+    }
+    .meta span {
+      display:flex;
+      align-items:center;
+      gap:6px;
+    }
+    .label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #9ca3af;
+      margin-top: 18px;
+      margin-bottom: 4px;
+    }
+    .value-box {
+      background:#020617;
+      border-radius:10px;
+      padding:10px 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 13px;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:8px;
+      border:1px solid rgba(31,41,55,0.9);
+    }
+    code {
+      word-break: break-all;
+    }
+    button.copy {
+      border:none;
+      border-radius:999px;
+      padding:6px 10px;
+      font-size:11px;
+      text-transform:uppercase;
+      letter-spacing:0.08em;
+      background:#22c55e;
+      color:#022c22;
+      cursor:pointer;
+    }
+    button.copy:hover {
+      filter:brightness(1.05);
+    }
+    .links {
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+      margin-top:8px;
+    }
+    a.conn-link {
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:8px;
+      text-decoration:none;
+      background:#020617;
+      border-radius:10px;
+      padding:10px 12px;
+      border:1px solid rgba(31,41,55,0.9);
+      color:#e5e7eb;
+      font-size:13px;
+    }
+    .conn-link span.small {
+      font-size:11px;
+      text-transform:uppercase;
+      letter-spacing:0.08em;
+      color:#9ca3af;
+    }
+    .badge {
+      font-size:11px;
+      padding:3px 8px;
+      border-radius:999px;
+      border:1px solid rgba(148,163,184,0.5);
+      color:#e5e7eb;
+    }
+    .footer {
+      margin-top:16px;
+      font-size:11px;
+      color:#6b7280;
+      display:flex;
+      justify-content:space-between;
+      gap:8px;
+      flex-wrap:wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header-row">
+      <div class="proto-pill">
+        <span>${proto^^}</span>
+        <span style="opacity:.7;">WS</span>
+      </div>
+      <span class="status-pill $status_class">$status_label</span>
+    </div>
+    <h1>$user@$domain</h1>
+    <div class="meta">
+      <span>📅 Created: $created</span>
+      <span>⏰ Expired: $exp</span>
+      <span>📦 Kuota: $quota_info</span>
+      <span>🛣️ Path: /$path</span>
+    </div>
+
+    <div class="label">Credential Utama</div>
+    <div class="value-box">
+      <code>$secret</code>
+      <button class="copy" data-copy="$secret">Copy</button>
+    </div>
+
+    <div class="label">Link Koneksi</div>
+    <div class="links">
+      <a class="conn-link" href="$link_tls">
+        <div>
+          <div><strong>TLS 443</strong></div>
+          <div class="small">WebSocket + TLS</div>
+        </div>
+        <span class="badge">COPY</span>
+      </a>
+      <a class="conn-link" href="$link_nontls">
+        <div>
+          <div><strong>Non-TLS 80</strong></div>
+          <div class="small">WS HTTP biasa</div>
+        </div>
+        <span class="badge">COPY</span>
+      </a>
+    </div>
+$extra_note
+    <div class="footer">
+      <span>Generated by Xray Menu</span>
+      <span>Share link ini ke user ⮕</span>
+    </div>
+  </div>
+
+<script>
+document.querySelectorAll('button.copy').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const text = btn.getAttribute('data-copy');
+    navigator.clipboard.writeText(text).then(() => {
+      const old = btn.textContent;
+      btn.textContent = 'Copied';
+      setTimeout(() => btn.textContent = old, 1200);
+    });
+  });
+});
+
+// Copy link TLS / Non-TLS ke clipboard saat kartu di-klik
+document.querySelectorAll('.conn-link').forEach(a => {
+  a.addEventListener('click', (e) => {
+    e.preventDefault(); // jangan buka link di browser
+    const text = a.getAttribute('data-copy') || a.getAttribute('href');
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => {
+      const badge = a.querySelector('.badge');
+      if (badge) {
+        const old = badge.textContent;
+        badge.textContent = 'Copied';
+        setTimeout(() => badge.textContent = old, 1200);
+      }
+    });
+  });
+});
+</script>
+</body>
+</html>
+EOF
+}
+
+# Sinkronkan info kuota di web panel dengan quota.db
+sync_quota_to_webpanel(){
+  # Kalau tidak ada data kuota, tidak perlu apa-apa
+  if [[ ! -s "$QUOTA_DB" ]]; then
+    return 0
+  fi
+
+  # Map user -> proto dari ledger (.db)
+  local all_map
+  all_map=$(get_all_created_users_map)
+
+  # Loop semua user yang punya kuota
+  while IFS='|' read -r u q used last_up last_down; do
+    [[ -z "$u" ]] && continue
+
+    # Cari protokol user ini
+    local proto
+    proto=$(echo "$all_map" | awk -F'|' -v uu="$u" '$1==uu {print $2; exit}')
+    [[ -z "$proto" ]] && continue
+
+    # Regenerate halaman HTML user ini (quota_info akan ikut nilai terbaru dari quota.db)
+    refresh_account_html "$proto" "$u"
+  done < "$QUOTA_DB"
+}
+
+rebuild_web_index() {
+  local out="$WEB_PANEL_DIR/index.html"
+
+  cat > "$out" <<EOF
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Xray Accounts Panel</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#020617; color:#e5e7eb; }
+    body { margin:0; padding:24px; min-height:100vh; }
+    h1 { margin:0 0 4px; font-size:24px; }
+    .sub { color:#9ca3af; font-size:13px; margin-bottom:16px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; margin-top:16px; }
+    .card {
+      border-radius:14px;
+      padding:12px 12px 10px;
+      background:rgba(15,23,42,0.96);
+      border:1px solid rgba(51,65,85,0.9);
+      text-decoration:none;
+      color:inherit;
+      display:block;
+    }
+    .tag { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:#93c5fd; }
+    .user { font-weight:600; margin:4px 0 2px; font-size:15px; }
+    .domain { font-size:12px; color:#9ca3af; }
+    .meta { font-size:11px; color:#9ca3af; display:flex; justify-content:space-between; margin-top:6px; }
+    .search-box { margin-top:8px; }
+    input[type="search"] {
+      width:100%; max-width:320px; padding:6px 10px; border-radius:999px;
+      border:1px solid rgba(75,85,99,0.9); background:#020617; color:#e5e7eb;
+    }
+  </style>
+</head>
+<body>
+  <h1>Xray Accounts</h1>
+  <div class="sub">Klik salah satu kartu untuk melihat detail akun.</div>
+  <div class="search-box">
+    <input id="search" type="search" placeholder="Cari username atau proto...">
+  </div>
+  <div class="grid" id="grid">
+EOF
+
+  # Loop semua DB & isi kartu
+  local domain
+  domain="$(get_domain)"
+
+  # ⬅️ tambahkan deklarasi lokal di sini
+  local proto u s e c q
+
+  for proto in vmess vless trojan shadowsocks http socks; do
+    local db="$ACCOUNTS_DIR/$proto.db"
+    [[ ! -f "$db" ]] && continue
+
+    while IFS='|' read -r u s e c q; do
+      [[ -z "$u" ]] && continue
+      [[ -z "$c" ]] && c="-"
+      cat >> "$out" <<EOF
+    <a class="card" href="accounts/${proto}/${u}.html" data-user="${u}" data-proto="${proto}" data-exp="${e}">
+      <div class="tag">${proto^^}</div>
+      <div class="user">${u}</div>
+      <div class="domain">${u}@${domain}</div>
+      <div class="meta">
+        <span>Exp: ${e}</span>
+        <span>Created: ${c}</span>
+      </div>
+    </a>
+EOF
+    done < "$db"
+  done
+
+  cat >> "$out" <<'EOF'
+  </div>
+
+<script>
+const input = document.getElementById('search');
+const cards = Array.from(document.querySelectorAll('.card'));
+input.addEventListener('input', () => {
+  const q = input.value.toLowerCase();
+  cards.forEach(card => {
+    const text = (card.dataset.user + ' ' + card.dataset.proto).toLowerCase();
+    card.style.display = text.includes(q) ? '' : 'none';
+  });
+});
+</script>
+</body>
+</html>
+EOF
+}
+
 # MENU: Sistem Kuota
 aksi_kuota(){
   while true; do
@@ -1679,8 +2225,8 @@ aksi_kuota(){
     print_menu_option "1)" "Set / Ubah kuota akun"
     print_menu_option "2)" "Reset kuota akun"
     print_menu_option "3)" "Lihat status kuota semua akun"
-    print_menu_option "4)" "Cek & blokir akun yang habis kuota (manual)"
-    print_menu_option "5)" "Buka blokir akun kuota (unblock)"
+    print_menu_option "4)" "Cek & nonaktifkan akun yang habis kuota (nonaktif)"
+    print_menu_option "5)" "Buka nonaktifkan akun kuota (nonaktif)"
     echo ""
     print_menu_option "0)" "Kembali ke Menu Utama"
 
@@ -1804,7 +2350,7 @@ aksi_ganti_domain(){
     
     for rec_id in $(echo "$old_records" | jq -r '.result[]?.id'); do
         if [[ -n "$rec_id" && "$rec_id" != "null" ]]; then
-            print_info "Menghapus record lama (ID: $rec_id)..."
+            print_info "Menghapus record lama..."
             curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records/$rec_id" \
                 -H "Authorization: Bearer $CF_TOKEN" \
                 -H "Content-Type: application/json" >/dev/null 2>&1
@@ -1847,7 +2393,6 @@ aksi_ganti_domain(){
   
   if [[ -f "$NGINX_CONF" ]]; then sed -i "s/server_name .*/server_name $newdom;/" "$NGINX_CONF"; fi
   
-  run_task "Menjalankan Nginx" "systemctl start nginx"
   restart_xray
   
   # TRIGGER FUNGSI UPDATE
@@ -2052,7 +2597,7 @@ aksi_about(){
 
 rute_blokir_akun() {
   clear
-  print_header "Blokir Akun (User/Email)"
+  print_header "Nonaktif Akun (User/Email)"
   
   # Ambil SEMUA user dari aturan 'blocked' yang punya array .user
   local rule_users_all_json
@@ -2111,13 +2656,13 @@ rute_blokir_akun() {
 
   # Tampilkan tabel 3 kolom
   print_three_columns "Protokol" "$(echo -e "$users_tersedia_proto")" \
-                      "User belum diblokir" "$(echo -e "$users_tersedia_user")" \
-                      "User sudah diblokir (proto:user)" "$blocked_combined"
+                      "User belum dinonaktifkan" "$(echo -e "$users_tersedia_user")" \
+                      "User sudah dinonaktifkan (proto:user)" "$blocked_combined"
 
   # --- Menu Aksi ---
   echo ""
-  print_menu_option "1)" "Tambah User ke Daftar Blokir"
-  print_menu_option "2)" "Hapus User dari Daftar Blokir (Unblock)"
+  print_menu_option "1)" "Tambah User ke Daftar Nonaktif"
+  print_menu_option "2)" "Hapus User dari Daftar Nonaktif"
   echo ""
   print_menu_option "0)" "Kembali"
   
@@ -2127,7 +2672,7 @@ rute_blokir_akun() {
 
   case "$sub_opt" in
     1) # Tambah
-      print_menu_prompt "Masukkan User/Email yang akan diblokir (0 untuk batal)" user_baru
+      print_menu_prompt "Masukkan User/Email yang akan dinonaktifkan (0 untuk batal)" user_baru
       if [[ "$user_baru" == "0" ]]; then return 0; fi
       if [[ -z "$user_baru" ]]; then
         print_error "Input tidak boleh kosong."
@@ -2135,7 +2680,7 @@ rute_blokir_akun() {
       fi
 
       if echo "$rule_users_all_json" | jq -e --arg u "$user_baru" '.[] | select(. == $u)' > /dev/null 2>&1; then
-        print_warn "User '$user_baru' sudah ada dalam daftar blokir."
+        print_warn "User '$user_baru' sudah ada dalam daftar nonaktif."
         pause_for_enter
         return 1
       fi
@@ -2148,7 +2693,7 @@ rute_blokir_akun() {
           | .user) |= (. + [$user_baru] | unique)
       ' "$CONFIG" > "$tmp"; then
         mv "$tmp" "$CONFIG"
-        print_info "User '$user_baru' berhasil ditambahkan ke daftar blokir."
+        print_info "User '$user_baru' berhasil ditambahkan ke daftar nonaktif."
         restart_xray
       else
         print_error "Gagal memperbarui konfigurasi."
@@ -2157,7 +2702,7 @@ rute_blokir_akun() {
       ;;
 
     2) # Hapus
-      print_menu_prompt "Masukkan User/Email yang akan di-UNBLOK (0 untuk batal)" user_hapus
+      print_menu_prompt "Masukkan User/Email yang akan di aktifkan (0 untuk batal)" user_hapus
       if [[ "$user_hapus" == "0" ]]; then return 0; fi
       if [[ -z "$user_hapus" ]]; then
         print_error "Input tidak boleh kosong."
@@ -2166,13 +2711,13 @@ rute_blokir_akun() {
 
       # Lindungi user system
       if [[ "$user_hapus" == "user2" || "$user_hapus" == "quota" ]]; then
-          print_error "User system '$user_hapus' tidak dapat dihapus dari daftar blokir."
+          print_error "User system '$user_hapus' tidak dapat dihapus dari daftar nonaktif."
           pause_for_enter
           return 1
       fi
 
       if ! echo "$rule_users_all_json" | jq -e --arg u "$user_hapus" '.[] | select(. == $u)' > /dev/null 2>&1; then
-        print_warn "User '$user_hapus' tidak ditemukan dalam daftar blokir."
+        print_warn "User '$user_hapus' tidak ditemukan dalam daftar nonaktif."
         pause_for_enter
         return 1
       fi
@@ -2184,7 +2729,7 @@ rute_blokir_akun() {
           | .user) |= (del(.[] | select(. == $user_hapus)))
       ' "$CONFIG" > "$tmp"; then
         mv "$tmp" "$CONFIG"
-        print_info "User '$user_hapus' berhasil di-UNBLOK (dihapus dari daftar blokir)."
+        print_info "User '$user_hapus' berhasil di aktifkan (dihapus dari daftar nonaktif)."
         restart_xray
       else
         print_error "Gagal memperbarui konfigurasi."
@@ -2198,7 +2743,6 @@ rute_blokir_akun() {
   
   pause_for_enter
 }
-
 
 # Poin 5: Fungsi atur rute website yang sudah ditentukan ke warp
 rute_toggle_website() {
@@ -2556,7 +3100,7 @@ aksi_rute_manajemen() {
   while true; do
     clear
     print_header "RUTE MANAJEMEN (WARP)"
-    print_menu_option "1)" "Blokir Akun (User/Email)"
+    print_menu_option "1)" "Nonaktif Akun (User/Email)"
     print_menu_option "2)" "Atur Rute Website (WARP/Direct)"
     print_menu_option "3)" "Atur Semua Koneksi (WARP/Direct)"
     print_menu_option "4)" "Atur Koneksi ke WARP (by User/Email)"
