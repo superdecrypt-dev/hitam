@@ -35,7 +35,7 @@ DOMAIN_OPT_4="vip04.qzz.io"
 
 # --- KONFIGURASI SUMBER MENU (GITHUB) ---
 # PENTING: Ganti URL ini dengan URL RAW file xray_menu.sh dari repo Github Anda
-MENU_URL="https://raw.githubusercontent.com/superdecrypt-dev/hitam/beta/main/menu.sh"
+MENU_URL="https://raw.githubusercontent.com/superdecrypt-dev/hitam/main/beta/menu.sh"
 
 # --- Log File ---
 LOG_FILE="/tmp/xray_install.log"
