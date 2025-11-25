@@ -5,6 +5,7 @@
 # Versi 5.0 (Added: Clean Start / Auto Delete Expired Account)
 # ======================================================================
 
+timedatectl set-timezone Asia/Jakarta
 # --- Variabel Warna (Diperluas) ---
 ESC="\033["
 RESET="${ESC}0m"
