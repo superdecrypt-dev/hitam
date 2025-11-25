@@ -1085,6 +1085,14 @@ server {
         proxy_pass http://\$xray_upstream\$xray_ws_path;
     }
 
+    location /panel/api/ {
+        proxy_pass http://127.0.0.1:9000/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     location /panel/ {
         alias /usr/local/etc/xray/webpanel/;
         index index.html;
@@ -1102,7 +1110,6 @@ start_services() {
     run_task "Restart Xray" "systemctl restart xray"
 }
 
-# ==========================================================
 # FITUR BARU: Install Menu Script & Sinkronisasi Config
 install_menu_script() {
     print_header "Langkah 11: Instalasi Skrip Menu"
@@ -1142,11 +1149,8 @@ install_menu_script() {
     fi
 
 }
-# ==========================================================
 
-# ==========================================================
 # FITUR BARU: Install Auto-Delete Expired Accounts (xp)
-# ==========================================================
 install_autoxp() {
     print_header "Langkah 12: Setup Auto-Delete (XP)"
     
@@ -1352,6 +1356,119 @@ show_summary() {
     print_line "=" "$B_GREEN"
 }
 
+# BACKEND API KECIL UNTUK WEB PANEL
+install_api_backend() {
+    print_header "Langkah 13: Setup Backend API Web Panel"
+
+    # 1. Install Python & Flask
+    run_task "Menginstal Python3 & pip" "apt-get update -y && apt-get install -y python3 python3-pip"
+    run_task "Menginstal modul Flask" "pip3 install flask"
+
+    # 2. Tuliskan skrip API
+    run_task "Membuat skrip backend API" "mkdir -p /usr/local/etc/xray"
+
+cat << 'EOF' > /usr/local/etc/xray/xray_panel_api.py
+#!/usr/bin/env python3
+from flask import Flask, jsonify
+import os
+
+ACCOUNTS_DIR = "/usr/local/etc/xray/accounts"
+QUOTA_DB = "/usr/local/etc/xray/quota.db"
+
+app = Flask(__name__)
+
+def load_quota():
+    data = {}
+    try:
+        with open(QUOTA_DB, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split("|")
+                if len(parts) < 3:
+                    continue
+                user = parts[0]
+                try:
+                    total = int(parts[1] or "0")
+                except ValueError:
+                    total = 0
+                try:
+                    used = int(parts[2] or "0")
+                except ValueError:
+                    used = 0
+                data[user] = {"total": total, "used": used}
+    except FileNotFoundError:
+        pass
+    except Exception:
+        # jangan matikan API hanya karena quota.db error
+        pass
+    return data
+
+@app.get("/api/ping")
+def ping():
+    return jsonify({"ok": True, "msg": "xray panel api ready"})
+
+@app.get("/api/accounts")
+def accounts():
+    quota = load_quota()
+    accounts = []
+    for proto in ["vmess", "vless", "trojan", "shadowsocks", "http", "socks"]:
+        db_path = os.path.join(ACCOUNTS_DIR, f"{proto}.db")
+        if not os.path.exists(db_path):
+            continue
+        try:
+            with open(db_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split("|")
+                    if len(parts) < 4:
+                        continue
+                    user = parts[0]
+                    secret = parts[1]
+                    expired = parts[2]
+                    created = parts[3]
+                    qinfo = quota.get(user, {"total": 0, "used": 0})
+                    accounts.append({
+                        "proto": proto,
+                        "user": user,
+                        "expired": expired,
+                        "created": created,
+                        "quota_total": qinfo["total"],
+                        "quota_used": qinfo["used"],
+                    })
+        except Exception:
+            # kalau satu db rusak, lewati saja
+            continue
+    return jsonify({"ok": True, "accounts": accounts})
+
+if __name__ == "__main__":
+    # API hanya listen di localhost, di-proxy oleh Nginx
+    app.run(host="127.0.0.1", port=9000)
+EOF
+
+    run_task "Mengatur izin eksekusi API" "chmod +x /usr/local/etc/xray/xray_panel_api.py"
+
+    # 3. Buat service systemd
+cat << 'EOF' > /etc/systemd/system/xray-panel-api.service
+[Unit]
+Description=Xray Web Panel API
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/etc/xray/xray_panel_api.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    run_task "Reload systemd daemon" "systemctl daemon-reload"
+    run_task "Enable & start layanan API panel" "systemctl enable --now xray-panel-api"
+}
 
 # --- Fungsi Main ---
 main() {
@@ -1399,6 +1516,9 @@ main() {
     
     # LANGKAH AUTO-DELETE (XP)
     install_autoxp
+    
+    # LANGKAH API BACKEND
+    install_api_backend
     
     # LANGKAH CRON KUOTA
     install_quota_cron
