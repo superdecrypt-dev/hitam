@@ -1322,7 +1322,7 @@ install_quota_cron() {
         return
     fi
 
-    print_info "Menambahkan cronjob cek & blokir (jalan tiap 5 menit)..."
+    print_info "Menambahkan cronjob cek & blokir (jalan tiap 1 menit)..."
 
     # Hapus entry lama (kalau ada), lalu tambahkan yang baru
     # Ini pakai crontab user root (installer memang dijalankan sebagai root)
