@@ -710,6 +710,13 @@ generate_configs() {
     PASS_SOCKS=$(LC_ALL=C tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16)
     print_info "Credential acak berhasil dibuat."
 
+    # Tambahan: baca path socket php-fpm kalau ada
+    local PHP_FPM_SOCK=""
+    if [[ -f /usr/local/etc/xray/php-fpm.sock ]]; then
+        PHP_FPM_SOCK=$(cat /usr/local/etc/xray/php-fpm.sock 2>/dev/null || true)
+    fi
+    [[ -z "$PHP_FPM_SOCK" ]] && PHP_FPM_SOCK="/run/php/php-fpm.sock"
+
     # Xray Config
     print_info "Menulis konfigurasi Xray (config.json)..."
     cat << EOF > /usr/local/etc/xray/config.json
@@ -1093,6 +1100,15 @@ server {
         proxy_set_header X-Forwarded-Proto /$scheme;
     }
 
+    # PHP bridge: /panel/api.php (create/delete/extend/dll via menu --api-*)
+    location ~ ^/panel/(.*\.php)$ {
+        alias /usr/local/etc/xray/webpanel/;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME /usr/local/etc/xray/webpanel//$1;
+        fastcgi_pass unix:/${PHP_FPM_SOCK};
+    }
+
     location /panel/ {
         alias /usr/local/etc/xray/webpanel/;
         index index.html;
@@ -1469,6 +1485,110 @@ EOF
     run_task "Enable & start layanan API panel" "systemctl enable --now xray-panel-api"
 }
 
+install_php_bridge() {
+    print_header "Langkah 14: Setup PHP Bridge Web Panel"
+
+    # 1. Install PHP-FPM & CLI
+    run_task "Menginstal PHP-FPM & CLI" "apt-get update -y && apt-get install -y php-fpm php-cli"
+
+    # 2. Deteksi socket php-fpm (php7.x / php8.x)
+    local sock
+    sock=$(ls /run/php/php*-fpm.sock 2>/dev/null | head -n1 || true)
+    if [[ -z "$sock" ]]; then
+        print_warn "Socket php-fpm tidak ditemukan, pakai default /run/php/php-fpm.sock (pastikan benar)."
+        sock="/run/php/php-fpm.sock"
+    fi
+
+    # Simpan path socket supaya bisa dipakai generate_configs()
+    mkdir -p /usr/local/etc/xray
+    echo "$sock" > /usr/local/etc/xray/php-fpm.sock
+    print_info "PHP-FPM socket terdeteksi: ${B_GREEN}$sock${RESET}"
+
+    # 3. Buat file api.php di webpanel
+    mkdir -p /usr/local/etc/xray/webpanel
+
+cat << 'EOF' > /usr/local/etc/xray/webpanel/api.php
+<?php
+// API bridge sederhana: memanggil /usr/local/bin/menu --api-*
+// DISARANKAN: lindungi dengan HTTP auth / IP whitelist sebelum dipakai publik.
+
+header('Content-Type: application/json');
+
+$action = $_GET['action'] ?? $_POST['action'] ?? '';
+$menu   = '/usr/local/bin/menu'; // sesuaikan jika path menu berbeda
+
+function run_cmd($cmd) {
+    $out = [];
+    $ret = 0;
+    exec($cmd . ' 2>&1', $out, $ret);
+    $text = implode("\n", $out);
+    if ($ret === 0 && strlen(trim($text)) > 0 && trim($text)[0] === '{') {
+        // output sudah JSON dari bash
+        echo $text;
+    } else {
+        echo json_encode([
+            'ok'    => false,
+            'error' => 'command_failed',
+            'code'  => $ret,
+            'output'=> $text,
+        ]);
+    }
+    exit;
+}
+
+switch ($action) {
+    case 'list':
+        run_cmd("sudo $menu --api-list-json");
+        break;
+
+    case 'create':
+        $proto = $_POST['proto'] ?? '';
+        $user  = $_POST['user']  ?? '';
+        $days  = $_POST['days']  ?? '30';
+        $quota = $_POST['quota_gb'] ?? '0';
+
+        $proto = escapeshellarg($proto);
+        $user  = escapeshellarg($user);
+        $days  = escapeshellarg($days);
+        $quota = escapeshellarg($quota);
+
+        run_cmd("sudo $menu --api-create --proto $proto --user $user --days $days --quota-gb $quota");
+        break;
+
+    case 'delete':
+        $proto = escapeshellarg($_POST['proto'] ?? '');
+        $user  = escapeshellarg($_POST['user']  ?? '');
+        run_cmd("sudo $menu --api-delete --proto $proto --user $user");
+        break;
+
+    case 'extend':
+        $proto = escapeshellarg($_POST['proto'] ?? '');
+        $user  = escapeshellarg($_POST['user']  ?? '');
+        $days  = escapeshellarg($_POST['days']  ?? '30');
+        run_cmd("sudo $menu --api-extend --proto $proto --user $user --days $days");
+        break;
+
+    default:
+        echo json_encode(['ok' => false, 'error' => 'unknown_action']);
+        exit;
+}
+EOF
+
+    run_task "Mengatur permission api.php" "chown www-data:www-data /usr/local/etc/xray/webpanel/api.php && chmod 640 /usr/local/etc/xray/webpanel/api.php"
+}
+
+setup_sudo_for_menu() {
+    print_header "Langkah 15: Setup sudo untuk www-data menjalankan menu"
+
+    # Buat file sudoers khusus
+    cat << 'EOF' > /etc/sudoers.d/xray-menu
+www-data ALL=(root) NOPASSWD: /usr/local/bin/menu
+EOF
+
+    chmod 440 /etc/sudoers.d/xray-menu
+    print_info "Rule sudoers untuk www-data -> menu telah dibuat."
+}
+
 # --- Fungsi Main ---
 main() {
     print_banner
@@ -1512,16 +1632,16 @@ main() {
     
     # LANGKAH MENU
     install_menu_script
-    
     # LANGKAH AUTO-DELETE (XP)
     install_autoxp
-    
     # LANGKAH API BACKEND
     install_api_backend
-    
     # LANGKAH CRON KUOTA
     install_quota_cron
-    
+    # LANGKAH PHP BRIDGE
+    install_php_bridge
+    # LANGKAH PHP SUDO
+    setup_sudo_for_menu
     show_summary
 
     echo -e "\n${B_GREEN}Semua langkah telah selesai!${RESET}\n"
