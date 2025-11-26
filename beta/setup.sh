@@ -1507,74 +1507,52 @@ install_php_bridge() {
     # 3. Buat file api.php di webpanel
     mkdir -p /usr/local/etc/xray/webpanel
 
-cat << 'EOF' > /usr/local/etc/xray/webpanel/api.php
+cat > /usr/local/etc/xray/webpanel/api.php << 'EOF'
 <?php
-// API bridge sederhana: memanggil /usr/local/bin/menu --api-*
-// DISARANKAN: lindungi dengan HTTP auth / IP whitelist sebelum dipakai publik.
+// Bridge PHP → /usr/local/bin/menu --api-*
+// Output selalu JSON untuk dipakai web panel.
 
 header('Content-Type: application/json');
 
-$action = $_GET['action'] ?? $_POST['action'] ?? '';
-$menu   = '/usr/local/bin/menu'; // sesuaikan jika path menu berbeda
+$action = $_POST['action'] ?? $_GET['action'] ?? '';
+$menu   = '/usr/local/bin/menu'; // sesuaikan kalau path menu beda
 
-function run_cmd($cmd) {
-    $out = [];
-    $ret = 0;
-    exec($cmd . ' 2>&1', $out, $ret);
-    $text = implode("\n", $out);
-    if ($ret === 0 && strlen(trim($text)) > 0 && trim($text)[0] === '{') {
-        // output sudah JSON dari bash
-        echo $text;
-    } else {
-        echo json_encode([
-            'ok'    => false,
-            'error' => 'command_failed',
-            'code'  => $ret,
-            'output'=> $text,
-        ]);
-    }
+if ($action === '') {
+    echo json_encode(['ok' => false, 'error' => 'no action']);
     exit;
 }
 
-switch ($action) {
-    case 'list':
-        run_cmd("sudo $menu --api-list-json");
-        break;
-
-    case 'create':
-        $proto = $_POST['proto'] ?? '';
-        $user  = $_POST['user']  ?? '';
-        $days  = $_POST['days']  ?? '30';
-        $quota = $_POST['quota_gb'] ?? '0';
-
-        $proto = escapeshellarg($proto);
-        $user  = escapeshellarg($user);
-        $days  = escapeshellarg($days);
-        $quota = escapeshellarg($quota);
-
-        run_cmd("sudo $menu --api-create --proto $proto --user $user --days $days --quota-gb $quota");
-        break;
-
-    case 'delete':
-        $proto = escapeshellarg($_POST['proto'] ?? '');
-        $user  = escapeshellarg($_POST['user']  ?? '');
-        run_cmd("sudo $menu --api-delete --proto $proto --user $user");
-        break;
-
-    case 'extend':
-        $proto = escapeshellarg($_POST['proto'] ?? '');
-        $user  = escapeshellarg($_POST['user']  ?? '');
-        $days  = escapeshellarg($_POST['days']  ?? '30');
-        run_cmd("sudo $menu --api-extend --proto $proto --user $user --days $days");
-        break;
-
-    default:
-        echo json_encode(['ok' => false, 'error' => 'unknown_action']);
-        exit;
+// batasi action yang diizinkan
+$allowed = ['create','extend','delete','list'];
+if (!in_array($action, $allowed, true)) {
+    echo json_encode(['ok' => false, 'error' => 'invalid action']);
+    exit;
 }
+
+// ambil parameter dari POST
+$proto    = $_POST['proto']    ?? '';
+$user     = $_POST['user']     ?? '';
+$days     = $_POST['days']     ?? '';
+$quota_gb = $_POST['quota_gb'] ?? '';
+
+// susun command menu (tiap action nanti di-handle oleh skrip menu)
+$cmd = escapeshellcmd($menu) . ' --api-' . escapeshellarg($action)
+     . ' --proto '    . escapeshellarg($proto)
+     . ' --user '     . escapeshellarg($user)
+     . ' --days '     . escapeshellarg($days)
+     . ' --quota-gb ' . escapeshellarg($quota_gb);
+
+// jalankan
+exec($cmd . ' 2>&1', $output, $code);
+
+echo json_encode([
+    'ok'     => ($code === 0),
+    'code'   => $code,
+    'output' => implode("\n", $output),
+]);
 EOF
 
-    run_task "Mengatur permission api.php" "chown www-data:www-data /usr/local/etc/xray/webpanel/api.php && chmod 640 /usr/local/etc/xray/webpanel/api.php"
+    run_task "Mengatur permission api.php" "chown www-data:www-data /usr/local/etc/xray/webpanel/api.php && chmod 644 /usr/local/etc/xray/webpanel/api.php"
 }
 
 setup_sudo_for_menu() {
