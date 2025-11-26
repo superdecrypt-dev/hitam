@@ -2124,92 +2124,638 @@ sync_quota_to_webpanel(){
   done < "$QUOTA_DB"
 }
 
-rebuild_web_index() {
+rebuild_web_index(){
+  mkdir -p "$WEB_PANEL_DIR/accounts"
   local out="$WEB_PANEL_DIR/index.html"
 
-  cat > "$out" <<EOF
-<!doctype html>
-<html lang="en">
+  cat > "$out" <<'EOF'
+<!DOCTYPE html>
+<html lang="id">
 <head>
-  <meta charset="utf-8">
-  <title>Xray Accounts Panel</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Xray Accounts</title>
   <style>
-    :root { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#020617; color:#e5e7eb; }
-    body { margin:0; padding:24px; min-height:100vh; }
-    h1 { margin:0 0 4px; font-size:24px; }
-    .sub { color:#9ca3af; font-size:13px; margin-bottom:16px; }
-    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; margin-top:16px; }
-    .card {
-      border-radius:14px;
-      padding:12px 12px 10px;
-      background:rgba(15,23,42,0.96);
-      border:1px solid rgba(51,65,85,0.9);
-      text-decoration:none;
-      color:inherit;
-      display:block;
+    :root {
+      --bg: #050711;
+      --bg-soft: #0e111b;
+      --accent: #4f46e5;
+      --accent-soft: rgba(79,70,229,0.1);
+      --text: #f9fafb;
+      --text-soft: #9ca3af;
+      --danger: #f97373;
+      --danger-soft: rgba(248,113,113,0.08);
+      --border: #1f2933;
+      --radius-card: 18px;
     }
-    .tag { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:#93c5fd; }
-    .user { font-weight:600; margin:4px 0 2px; font-size:15px; }
-    .domain { font-size:12px; color:#9ca3af; }
-    .meta { font-size:11px; color:#9ca3af; display:flex; justify-content:space-between; margin-top:6px; }
-    .search-box { margin-top:8px; }
-    input[type="search"] {
-      width:100%; max-width:320px; padding:6px 10px; border-radius:999px;
-      border:1px solid rgba(75,85,99,0.9); background:#020617; color:#e5e7eb;
+    * {
+      box-sizing: border-box;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
+                   "Segoe UI", sans-serif;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at top, #111827 0, #020617 55%, #000 100%);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      padding: 24px 8px 40px;
+    }
+    .container {
+      width: 100%;
+      max-width: 980px;
+      background: linear-gradient(135deg, rgba(148,163,184,0.12), rgba(15,23,42,0.92));
+      border-radius: 24px;
+      padding: 20px 16px 24px;
+      border: 1px solid rgba(148,163,184,0.3);
+      box-shadow:
+        0 24px 60px rgba(15,23,42,0.9),
+        0 0 0 1px rgba(15,23,42,0.9);
+      backdrop-filter: blur(22px);
+    }
+    @media (min-width: 768px) {
+      .container { padding: 22px 22px 26px; }
+    }
+
+    .header {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-bottom: 16px;
+    }
+    .title-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    h1 {
+      font-size: 24px;
+      letter-spacing: 0.03em;
+      margin: 0;
+    }
+    .chip {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(15,23,42,0.9);
+      border: 1px solid rgba(148,163,184,0.45);
+      color: var(--text-soft);
+    }
+    .subtitle {
+      font-size: 13px;
+      color: var(--text-soft);
+      max-width: 640px;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+    @media (min-width: 640px) {
+      .toolbar { flex-direction: row; align-items: center; }
+    }
+    .search-box {
+      position: relative;
+      flex: 1;
+    }
+    .search-input {
+      width: 100%;
+      padding: 9px 10px 9px 32px;
+      border-radius: 999px;
+      border: 1px solid rgba(55,65,81,0.9);
+      background: rgba(15,23,42,0.9);
+      color: var(--text);
+      font-size: 13px;
+      outline: none;
+    }
+    .search-input::placeholder { color: #6b7280; }
+    .search-icon {
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 13px;
+      color: #6b7280;
+    }
+    .toolbar-right {
+      display: flex;
+      gap: 6px;
+    }
+    .btn {
+      border: 1px solid rgba(148,163,184,0.5);
+      background: rgba(15,23,42,0.9);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 7px 14px;
+      font-size: 12px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      line-height: 1;
+      white-space: nowrap;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #6366f1, #4f46e5);
+      border-color: transparent;
+    }
+    .btn-danger {
+      background: var(--danger-soft);
+      border-color: rgba(248,113,113,0.6);
+      color: #fecaca;
+    }
+    .btn:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.9fr);
+      gap: 14px;
+    }
+    @media (max-width: 799px) {
+      .layout {
+        grid-template-columns: minmax(0,1fr);
+      }
+    }
+
+    .card-box {
+      background: rgba(15,23,42,0.95);
+      border-radius: 18px;
+      padding: 12px 10px 12px;
+      border: 1px solid rgba(31,41,55,0.9);
+      box-shadow: inset 0 0 0 1px rgba(15,23,42,0.9);
+    }
+    .card-box-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .card-box-title {
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .card-box-subtitle {
+      font-size: 11px;
+      color: var(--text-soft);
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+      gap: 8px;
+    }
+    .card {
+      position: relative;
+      background: radial-gradient(circle at top left, rgba(79,70,229,0.06), rgba(15,23,42,1));
+      border-radius: var(--radius-card);
+      padding: 10px 10px 11px;
+      border: 1px solid rgba(55,65,81,0.9);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease, background 120ms ease;
+    }
+    .card:hover {
+      transform: translateY(-1.5px);
+      border-color: rgba(129,140,248,0.95);
+      box-shadow: 0 10px 25px rgba(15,23,42,0.9);
+      background: radial-gradient(circle at top left, rgba(79,70,229,0.16), rgba(15,23,42,1));
+    }
+    .tag {
+      align-self: flex-start;
+      padding: 2px 9px;
+      border-radius: 999px;
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      background: rgba(30,64,175,0.25);
+      border: 1px solid rgba(129,140,248,0.6);
+      color: #c7d2fe;
+    }
+    .user {
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .meta, .quota-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-soft);
+      gap: 4px;
+    }
+    .status {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      align-self: flex-start;
+      border: 1px solid rgba(55,65,81,0.9);
+      background: rgba(15,23,42,0.9);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: #6b7280;
+    }
+    .status-aktif {
+      border-color: rgba(34,197,94,0.65);
+      color: #bbf7d0;
+      background: rgba(22,163,74,0.12);
+    }
+    .status-aktif .status-dot { background: #22c55e; }
+    .status-nonaktif {
+      border-color: rgba(248,113,113,0.75);
+      color: #fecaca;
+      background: rgba(248,113,113,0.12);
+    }
+    .status-nonaktif .status-dot { background: #f97373; }
+
+    .actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 4px;
+      flex-wrap: wrap;
+    }
+    .btn-xs {
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(55,65,81,0.95);
+      background: rgba(15,23,42,0.95);
+      color: var(--text-soft);
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .btn-xs-primary {
+      color: #c7d2fe;
+      border-color: rgba(129,140,248,0.9);
+      background: radial-gradient(circle at top left, rgba(79,70,229,0.32), rgba(15,23,42,1));
+    }
+    .btn-xs-danger {
+      color: #fecaca;
+      border-color: rgba(248,113,113,0.9);
+      background: rgba(127,29,29,0.85);
+    }
+
+    .empty-state {
+      padding: 18px 14px;
+      border-radius: 16px;
+      background: rgba(15,23,42,0.96);
+      border: 1px dashed rgba(55,65,81,0.9);
+      font-size: 12px;
+      color: var(--text-soft);
+    }
+
+    .form-box {
+      background: rgba(15,23,42,0.98);
+      border-radius: 18px;
+      padding: 12px 12px 14px;
+      border: 1px solid rgba(31,41,55,0.9);
+      box-shadow: inset 0 0 0 1px rgba(15,23,42,0.95);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .form-title {
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .form-subtitle {
+      font-size: 11px;
+      color: var(--text-soft);
+    }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2,minmax(0,1fr));
+      gap: 8px;
+    }
+    @media (max-width: 480px) {
+      .form-grid { grid-template-columns: minmax(0,1fr); }
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    label {
+      font-size: 11px;
+      color: var(--text-soft);
+    }
+    select, input[type="text"], input[type="number"] {
+      width: 100%;
+      padding: 7px 8px;
+      border-radius: 10px;
+      border: 1px solid rgba(55,65,81,0.95);
+      background: #020617;
+      color: var(--text);
+      font-size: 12px;
+      outline: none;
+    }
+    select:focus, input:focus {
+      border-color: rgba(129,140,248,0.95);
+      box-shadow: 0 0 0 1px rgba(129,140,248,0.6);
+    }
+
+    .helper {
+      font-size: 10px;
+      color: var(--text-soft);
+      line-height: 1.4;
+    }
+    .footer {
+      margin-top: 12px;
+      font-size: 10px;
+      color: var(--text-soft);
+      text-align: right;
     }
   </style>
 </head>
 <body>
-  <h1>Xray Accounts</h1>
-  <div class="sub">Klik salah satu kartu untuk melihat detail akun.</div>
-  <div class="search-box">
-    <input id="search" type="search" placeholder="Cari username atau proto...">
+<div class="container">
+  <header class="header">
+    <div class="title-row">
+      <h1>Xray Accounts</h1>
+      <span class="chip">Web Panel &amp; Menu Bridge</span>
+    </div>
+    <p class="subtitle">
+      Kelola akun Xray langsung dari web: buat akun baru, perpanjang masa aktif, hapus akun,
+      dan lihat status kuota aktif/nonaktif.
+    </p>
+  </header>
+
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-icon">🔍</span>
+      <input id="search" class="search-input" placeholder="Cari username atau proto (vmess, vless, trojan, ...)" />
+    </div>
+    <div class="toolbar-right">
+      <button id="refresh-btn" class="btn">
+        ⟳ Refresh
+      </button>
+    </div>
   </div>
-  <div class="grid" id="grid">
-EOF
 
-  # Loop semua DB & isi kartu
-  local domain
-  domain="$(get_domain)"
-
-  # ⬅️ tambahkan deklarasi lokal di sini
-  local proto u s e c q
-
-  for proto in vmess vless trojan shadowsocks http socks; do
-    local db="$ACCOUNTS_DIR/$proto.db"
-    [[ ! -f "$db" ]] && continue
-
-    while IFS='|' read -r u s e c q; do
-      [[ -z "$u" ]] && continue
-      [[ -z "$c" ]] && c="-"
-      cat >> "$out" <<EOF
-    <a class="card" href="accounts/${proto}/${u}.html" data-user="${u}" data-proto="${proto}" data-exp="${e}">
-      <div class="tag">${proto^^}</div>
-      <div class="user">${u}</div>
-      <div class="domain">${u}@${domain}</div>
-      <div class="meta">
-        <span>Exp: ${e}</span>
-        <span>Created: ${c}</span>
+  <div class="layout">
+    <!-- Daftar Akun -->
+    <section class="card-box">
+      <div class="card-box-header">
+        <div>
+          <div class="card-box-title">Daftar Akun</div>
+          <div class="card-box-subtitle">Klik tombol di kartu untuk detail, perpanjang, atau hapus.</div>
+        </div>
       </div>
-    </a>
-EOF
-    done < "$db"
-  done
+      <div id="account-list" class="cards"></div>
+      <div id="account-empty" class="empty-state" style="display:none">
+        Belum ada akun. Gunakan formulir di samping untuk membuat akun Xray pertama.
+      </div>
+    </section>
 
-  cat >> "$out" <<'EOF'
+    <!-- Form Buat Akun -->
+    <aside class="form-box">
+      <div>
+        <div class="form-title">Buat Akun Baru</div>
+        <div class="form-subtitle">Form ini memanggil <code>/usr/local/bin/menu --api-create</code> lewat <code>api.php</code>.</div>
+      </div>
+      <form id="create-form">
+        <div class="form-grid">
+          <div class="field">
+            <label for="proto">Protocol</label>
+            <select id="proto" name="proto">
+              <option value="vless">VLESS</option>
+              <option value="vmess">VMESS</option>
+              <option value="trojan">TROJAN</option>
+              <option value="shadowsocks">SHADOWSOCKS</option>
+              <option value="http">HTTP</option>
+              <option value="socks">SOCKS</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="user">Username</label>
+            <input id="user" name="user" type="text" required autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="days">Masa aktif (hari)</label>
+            <input id="days" name="days" type="number" min="1" value="30" />
+          </div>
+          <div class="field">
+            <label for="quota_gb">Kuota (GB, 0 = bebas)</label>
+            <input id="quota_gb" name="quota_gb" type="number" min="0" value="0" />
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary" id="create-submit">+ Buat Akun</button>
+      </form>
+      <div class="helper">
+        Aksi lanjutan (set kuota detail, blokir/unblokir kuota, ganti domain, rute manajemen) tetap bisa
+        dilakukan dari menu terminal seperti biasa. Web panel fokus ke operasi akun utama.
+      </div>
+      <div class="footer">
+        Panel ini membaca data dari <code>quota.db</code> dan berkas <code>accounts/*.db</code>.
+      </div>
+    </aside>
   </div>
+</div>
 
 <script>
-const input = document.getElementById('search');
-const cards = Array.from(document.querySelectorAll('.card'));
-input.addEventListener('input', () => {
-  const q = input.value.toLowerCase();
+const apiAccounts = '/panel/api/accounts';   // Flask
+const apiMenu     = '/panel/api.php';       // PHP → /usr/local/bin/menu --api-*
+
+function formatBytes(b) {
+  b = Number(b || 0);
+  if (!b) return '0B';
+  const units = ['B','KB','MB','GB','TB'];
+  let i = 0;
+  while (b >= 1024 && i < units.length - 1) {
+    b /= 1024;
+    i++;
+  }
+  const digits = i === 0 ? 0 : 1;
+  return b.toFixed(digits) + units[i];
+}
+
+function statusFromQuota(total, used) {
+  total = Number(total || 0);
+  used  = Number(used  || 0);
+  if (total > 0 && used >= total) return 'nonaktif';
+  return 'aktif';
+}
+
+function applySearchFilter() {
+  const q = document.getElementById('search').value.toLowerCase();
+  const cards = document.querySelectorAll('#account-list .card');
   cards.forEach(card => {
-    const text = (card.dataset.user + ' ' + card.dataset.proto).toLowerCase();
-    card.style.display = text.includes(q) ? '' : 'none';
+    const txt = (card.dataset.user + ' ' + card.dataset.proto).toLowerCase();
+    card.style.display = txt.includes(q) ? '' : 'none';
   });
+}
+
+function setEmptyState(show) {
+  const emptyEl = document.getElementById('account-empty');
+  const listEl  = document.getElementById('account-list');
+  emptyEl.style.display = show ? '' : 'none';
+  if (show) listEl.innerHTML = '';
+}
+
+async function loadAccounts() {
+  try {
+    const res = await fetch(apiAccounts, {cache: 'no-store'});
+    const data = await res.json();
+    if (!data.ok) {
+      console.error('API /accounts error:', data);
+      setEmptyState(true);
+      return;
+    }
+    renderAccounts(data.accounts || []);
+  } catch (e) {
+    console.error('Gagal load /accounts:', e);
+    setEmptyState(true);
+  }
+}
+
+function renderAccounts(accounts) {
+  const listEl = document.getElementById('account-list');
+  listEl.innerHTML = '';
+  if (!accounts.length) {
+    setEmptyState(true);
+    return;
+  }
+  setEmptyState(false);
+
+  for (const acc of accounts) {
+    const quotaTotal = acc.quota_total || 0;
+    const quotaUsed  = acc.quota_used  || 0;
+    const status     = statusFromQuota(quotaTotal, quotaUsed);
+
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.dataset.user  = acc.user;
+    card.dataset.proto = acc.proto;
+
+    card.innerHTML = `
+      <span class="tag">${(acc.proto || '').toUpperCase()}</span>
+      <div class="user">${acc.user}</div>
+      <div class="meta">
+        <span>Dibuat: ${acc.created || '-'}</span>
+        <span>Exp: ${acc.expired || '-'}</span>
+      </div>
+      <div class="quota-row">
+        <span>Kuota:</span>
+        <span>${formatBytes(quotaUsed)} / ${formatBytes(quotaTotal)}</span>
+      </div>
+      <div class="status status-${status}">
+        <span class="status-dot"></span>
+        <span>${status === 'aktif' ? 'Aktif' : 'Nonaktif (kuota habis)'}</span>
+      </div>
+      <div class="actions">
+        <a class="btn-xs btn-xs-primary" href="accounts/${acc.proto}/${acc.user}.html" target="_blank">Detail</a>
+        <button type="button" class="btn-xs" data-act="extend">Perpanjang</button>
+        <button type="button" class="btn-xs btn-xs-danger" data-act="delete">Hapus</button>
+      </div>
+    `;
+    listEl.appendChild(card);
+  }
+  applySearchFilter();
+}
+
+async function callMenuApi(action, payload) {
+  const params = new URLSearchParams({ action, ...payload });
+  const res = await fetch(apiMenu, {
+    method: 'POST',
+    body: params
+  });
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    throw new Error('Gagal parse respon server');
+  }
+  if (!data.ok) {
+    throw new Error(data.error || data.output || 'Perintah gagal');
+  }
+  return data;
+}
+
+document.getElementById('search').addEventListener('input', applySearchFilter);
+document.getElementById('refresh-btn').addEventListener('click', loadAccounts);
+
+document.getElementById('create-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('create-submit');
+
+  const proto    = document.getElementById('proto').value.trim();
+  const user     = document.getElementById('user').value.trim();
+  const days     = document.getElementById('days').value.trim() || '30';
+  const quota_gb = document.getElementById('quota_gb').value.trim() || '0';
+
+  if (!proto || !user) {
+    alert('Proto dan username wajib diisi.');
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    await callMenuApi('create', { proto, user, days, quota_gb });
+    await loadAccounts();
+    document.getElementById('create-form').reset();
+    document.getElementById('days').value = '30';
+    document.getElementById('quota_gb').value = '0';
+  } catch (e2) {
+    alert('Gagal membuat akun: ' + e2.message);
+  } finally {
+    btn.disabled = false;
+  }
 });
+
+document.getElementById('account-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  const card  = btn.closest('.card');
+  const proto = card.dataset.proto;
+  const user  = card.dataset.user;
+  const act   = btn.dataset.act;
+
+  if (act === 'delete') {
+    if (!confirm(`Hapus akun ${user} (${proto})?`)) return;
+    btn.disabled = true;
+    try {
+      await callMenuApi('delete', { proto, user });
+      card.remove();
+      if (!document.querySelector('#account-list .card')) setEmptyState(true);
+    } catch (e2) {
+      alert('Gagal hapus akun: ' + e2.message);
+    } finally {
+      btn.disabled = false;
+    }
+  } else if (act === 'extend') {
+    const days = prompt('Tambah berapa hari?', '30');
+    if (!days) return;
+    btn.disabled = true;
+    try {
+      await callMenuApi('extend', { proto, user, days });
+      await loadAccounts();
+    } catch (e2) {
+      alert('Gagal perpanjang akun: ' + e2.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+});
+
+loadAccounts();
 </script>
 </body>
 </html>
