@@ -1105,8 +1105,8 @@ server {
         alias /usr/local/etc/xray/webpanel/;
         fastcgi_index index.php;
         include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME /usr/local/etc/xray/webpanel/\$1;
-        fastcgi_pass unix:\${PHP_FPM_SOCK};
+        fastcgi_param SCRIPT_FILENAME /usr/local/etc/xray/webpanel/$1;
+        fastcgi_pass unix:${PHP_FPM_SOCK};
     }
 
     location /panel/ {
