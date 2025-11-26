@@ -1094,19 +1094,19 @@ server {
 
     location /panel/api/ {
         proxy_pass http://127.0.0.1:9000/api/;
-        proxy_set_header Host /$host;
-        proxy_set_header X-Real-IP /$remote_addr;
-        proxy_set_header X-Forwarded-For /$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto /$scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     # PHP bridge: /panel/api.php (create/delete/extend/dll via menu --api-*)
-    location ~ ^/panel/(.*\.php)$ {
+    location ~ ^/panel/(.*\.php)\$ {
         alias /usr/local/etc/xray/webpanel/;
         fastcgi_index index.php;
         include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME /usr/local/etc/xray/webpanel//$1;
-        fastcgi_pass unix:/${PHP_FPM_SOCK};
+        fastcgi_param SCRIPT_FILENAME /usr/local/etc/xray/webpanel/\$1;
+        fastcgi_pass unix:\${PHP_FPM_SOCK};
     }
 
     location /panel/ {
