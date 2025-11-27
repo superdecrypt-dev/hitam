@@ -1287,23 +1287,36 @@ EOF
     function renderTable(data) {
         allAccounts = data;
         let html = '';
-        data.forEach(acc => {
-            html += `<tr>
-                <td class="fw-bold text-white">
-                    ${acc.user}
-                    <div style="font-size:10px; color:#888;">${acc.created}</div>
-                </td>
-                <td><span class="badge bg-primary">${acc.proto}</span></td>
-                <td>${acc.exp}</td>
-                <td>${acc.quota}</td>
-                <td><span class="badge ${acc.status === 'active' ? 'bg-success' : 'bg-danger'}">${acc.status}</span></td>
-                <td class="text-end">
-                    <a href="accounts/${acc.proto}/${acc.user}.html" target="_blank" class="btn btn-sm btn-info me-1">Detail</a>
-                    <button class="btn btn-sm btn-warning me-1" onclick="renewAccount('${acc.user}', '${acc.proto}')">+Exp</button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteAccount('${acc.user}', '${acc.proto}')">Del</button>
-                </td>
-            </tr>`;
-        });
+        
+        if(data.length === 0) {
+            html = '<tr><td colspan="6" class="text-center text-muted">Tidak ada akun ditemukan</td></tr>';
+        } else {
+            data.forEach(acc => {
+                // Tentukan warna badge status
+                let statusBadge = acc.status === 'active' 
+                    ? '<span class="badge bg-success">Aktif</span>' 
+                    : '<span class="badge bg-danger">Nonaktif</span>';
+                
+                // Fix Tampilan User: Pakai style inline agar tidak tertimpa
+                html += `<tr>
+                    <td>
+                        <div style="font-weight:bold; color: #fff; font-size: 1.1em;">${acc.user}</div>
+                        <div style="font-size:11px; color:#aaa;">Dibuat: ${acc.created}</div>
+                    </td>
+                    <td><span class="badge bg-primary text-uppercase">${acc.proto}</span></td>
+                    <td class="text-white">${acc.exp}</td>
+                    <td class="text-white" style="font-family:monospace;">${acc.quota}</td>
+                    <td>${statusBadge}</td>
+                    <td class="text-end">
+                        <div class="btn-group">
+                            <a href="accounts/${acc.proto}/${acc.user}.html" target="_blank" class="btn btn-sm btn-info" title="Detail">Info</a>
+                            <button class="btn btn-sm btn-warning" onclick="renewAccount('${acc.user}', '${acc.proto}')" title="Perpanjang">+Exp</button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteAccount('${acc.user}', '${acc.proto}')" title="Hapus">X</button>
+                        </div>
+                    </td>
+                </tr>`;
+            });
+        }
         $('#accTable').html(html);
         filterTable();
     }

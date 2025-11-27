@@ -3137,32 +3137,62 @@ api_response() {
 }
 
 if [[ "$1" == "--api-list" ]]; then
-    # Generate JSON daftar akun
+    # --- OPTIMASI: BACA DB KE MEMORY DULU (ASSOCIATIVE ARRAY) ---
+    # Ini mencegah ribuan kali akses disk (grep) di dalam loop
+    declare -A usage_map
+    declare -A limit_map
+    
+    if [[ -f "$QUOTA_DB" ]]; then
+        while IFS='|' read -r q_user q_limit q_used rest; do
+            usage_map["$q_user"]="$q_used"
+            limit_map["$q_user"]="$q_limit"
+        done < "$QUOTA_DB"
+    fi
+
+    # Generate JSON
     json_data="["
     first=1
+    
     for p in vmess vless trojan shadowsocks http socks; do
         f="$ACCOUNTS_DIR/$p.db"
         if [[ -f "$f" ]]; then
-            while IFS='|' read -r u s e c q; do
+            while IFS='|' read -r u s e c q_static; do
+                # Sanitasi string (hapus karakter aneh/spasi)
+                u=$(echo "$u" | tr -d '\r\n')
                 [[ -z "$u" ]] && continue
-                [[ $first -eq 0 ]] && json_data+=","
                 
-                # Cek status kuota
+                if [[ $first -eq 0 ]]; then json_data+=","; fi
+                
+                # --- LOGIKA KUOTA & STATUS ---
+                local current_usage=${usage_map["$u"]:-0}
+                local current_limit=${limit_map["$u"]:-0}
+                
+                # Fallback: Jika limit di quota.db 0, coba ambil dari db akun
+                if [[ "$current_limit" == "0" || -z "$current_limit" ]]; then
+                    current_limit="$q_static"
+                fi
+                [[ -z "$current_limit" ]] && current_limit=0
+
+                # Format Teks Kuota
                 local q_text="Unlimited"
                 local status="active"
-                if [[ -s "$QUOTA_DB" ]]; then
-                   local qline=$(grep "^$u|" "$QUOTA_DB" 2>/dev/null || true)
-                   if [[ -n "$qline" ]]; then
-                       local qtot=$(echo "$qline" | cut -d'|' -f2)
-                       local qused=$(echo "$qline" | cut -d'|' -f3)
-                       [[ -z "$qused" ]] && qused=0
-                       q_text="$(bytes_to_human "$qused") / $(bytes_to_human "$qtot")"
-                       if (( qtot > 0 )); then
-                           if (( qused >= qtot )); then status="inactive"; fi
-                       fi
-                   fi
+                
+                if [[ "$current_limit" -gt 0 ]]; then
+                    local human_used=$(bytes_to_human "$current_usage")
+                    local human_limit=$(bytes_to_human "$current_limit")
+                    q_text="${human_used} / ${human_limit}"
+                    
+                    # Cek Status Expired atau Kuota Habis
+                    if (( current_usage >= current_limit )); then
+                        status="inactive"
+                    fi
+                else
+                    # Jika unlimited, tampilkan penggunaan saja
+                    local human_used=$(bytes_to_human "$current_usage")
+                    q_text="${human_used} / ∞"
                 fi
 
+                # Kirim JSON
                 json_data+="{\"user\":\"$u\",\"proto\":\"$p\",\"exp\":\"$e\",\"created\":\"$c\",\"quota\":\"$q_text\",\"status\":\"$status\"}"
                 first=0
             done < "$f"
@@ -3173,6 +3203,7 @@ if [[ "$1" == "--api-list" ]]; then
     echo "{\"status\":\"success\",\"data\":$json_data}"
     exit 0
 fi
+
 
 if [[ "$1" == "--api-create" ]]; then
     # Usage: --api-create [proto] [user] [days] [quota]
