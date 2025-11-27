@@ -1140,13 +1140,6 @@ install_menu_script() {
     else
         print_error "Gagal mengunduh skrip menu. Cek koneksi atau URL (lihat log)."
     fi
-
-    # >>> TAMBAHAN: init web panel walaupun belum ada akun <<<
-    if [[ -x /usr/local/bin/menu ]]; then
-        /usr/local/bin/menu --init-webpanel >/dev/null 2>&1 || true
-        print_info "Web panel diinisialisasi (index.html dibuat meski belum ada akun)."
-    fi
-
 }
 
 # FITUR BARU: Install Auto-Delete Expired Accounts (xp)
