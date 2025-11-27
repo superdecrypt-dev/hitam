@@ -874,24 +874,37 @@ get_ss_server_psk() {
 }
 
 restart_xray(){
-  # Restart Nginx, Xray, dan Wireproxy setiap ada perubahan penting
-  if ! run_task "Me-restart layanan Nginx" "systemctl restart nginx"; then
-      print_warn "Layanan Nginx gagal restart. Cek status."
+  # Restart / reload Nginx, lalu Xray dan Wireproxy
+  # Dikasih timeout supaya menu nggak nyangkut kalau service bermasalah
+
+  # --- NGINX ---
+  if command -v nginx >/dev/null 2>&1; then
+      # Coba reload dulu (lebih ringan).
+      # Kalau reload gagal, baru coba restart.
+      if ! run_task "Me-reload layanan Nginx (maks 15 detik)" "timeout 15 systemctl reload nginx"; then
+          print_warn "Reload Nginx gagal, mencoba restart..."
+          if ! run_task "Me-restart layanan Nginx (maks 20 detik)" "timeout 20 systemctl restart nginx"; then
+              print_warn "Layanan Nginx gagal restart atau timeout. Cek status dengan: systemctl status nginx"
+          fi
+      fi
+  else
+      print_warn "Nginx tidak ditemukan, lewati restart Nginx."
   fi
 
+  # --- XRAY ---
   if ! run_task "Me-restart layanan Xray" "systemctl restart xray"; then
-      print_warn "Layanan Xray gagal restart. Cek status."
+      print_warn "Layanan Xray gagal restart. Cek status dengan: systemctl status xray"
   fi
 
-  # Wireproxy opsional: kalau belum terpasang, abaikan error-nya
-  if ! run_task "Me-restart layanan Wireproxy" "systemctl restart wireproxy"; then
-      print_warn "Layanan Wireproxy gagal restart (abaikan jika belum terpasang)."
+  # --- WIREPROXY (opsional) ---
+  if systemctl list-unit-files 2>/dev/null | grep -q '^wireproxy\.service'; then
+      if ! run_task "Me-restart layanan Wireproxy" "systemctl restart wireproxy"; then
+          print_warn "Layanan Wireproxy gagal restart (abaikan jika belum terpasang)."
+      fi
   fi
 
-  # Kasih jeda sedikit biar semua service stabil
   sleep 0.5
 }
-
 
 # ====== Operasi JSON klien (UPDATED) ======
 add_client_std(){ # vmess, vless, trojan, shadowsocks
