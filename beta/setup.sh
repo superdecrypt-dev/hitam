@@ -1355,18 +1355,6 @@ show_summary() {
     print_line "=" "$B_GREEN"
 }
 
-setup_sudo_for_menu() {
-    print_header "Langkah 15: Setup sudo untuk www-data menjalankan menu"
-
-    # Buat file sudoers khusus
-    cat << 'EOF' > /etc/sudoers.d/xray-menu
-www-data ALL=(root) NOPASSWD: /usr/local/bin/menu
-EOF
-
-    chmod 440 /etc/sudoers.d/xray-menu
-    print_info "Rule sudoers untuk www-data -> menu telah dibuat."
-}
-
 # --- Fungsi Main ---
 main() {
     print_banner
