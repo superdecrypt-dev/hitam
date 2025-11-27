@@ -1783,317 +1783,570 @@ aksi_daftar_akun(){
   pause_for_enter
 }
 
-render_account_html() {
+render_account_html(){
   local proto="$1"
   local user="$2"
   local domain="$3"
-  local path="$4"        # tanpa slash depan, mis: vmess-ws
+  local path="$4"
   local secret="$5"
   local exp="$6"
   local created="$7"
   local link_tls="$8"
   local link_nontls="$9"
 
-# Info kuota + status aktif/nonaktif
-  local quota_info="Unlimited"
+  # --- Hitung kuota + status dari QUOTA_DB (kalau ada) ---
+  local quota_total_bytes=0
+  local quota_used_bytes=0
+  local quota_text="Tidak dibatasi"
+  local quota_percent=0
   local status_label="AKTIF"
-  local status_class="status-on"
+  local status_color="#22c55e"  # hijau
+  local status_bg="rgba(34,197,94,0.12)"
 
   if [[ -s "$QUOTA_DB" ]]; then
     local line
     line=$(grep "^$user|" "$QUOTA_DB" 2>/dev/null | head -n1 || true)
     if [[ -n "$line" ]]; then
-      local q used
-      q=$(echo "$line" | cut -d'|' -f2)
-      used=$(echo "$line" | cut -d'|' -f3)
-      [[ -z "$used" ]] && used=0
+      quota_total_bytes=$(echo "$line" | cut -d'|' -f2)
+      quota_used_bytes=$(echo "$line"  | cut -d'|' -f3)
+      [[ -z "$quota_used_bytes" ]] && quota_used_bytes=0
 
-      if (( q > 0 )); then
-        # Kuota terbatas: tampilkan "terpakai / total"
-        quota_info="$(bytes_to_human "$used") / $(bytes_to_human "$q")"
-        if (( used >= q )); then
+      local human_total human_used
+      human_total=$(bytes_to_human "$quota_total_bytes")
+      human_used=$(bytes_to_human "$quota_used_bytes")
+      quota_text="${human_used} / ${human_total}"
+
+      if (( quota_total_bytes > 0 )); then
+        quota_percent=$(( quota_used_bytes * 100 / quota_total_bytes ))
+        (( quota_percent > 100 )) && quota_percent=100
+
+        if (( quota_used_bytes >= quota_total_bytes )); then
           status_label="NONAKTIF"
-          status_class="status-off"
-        else
-          status_label="AKTIF"
-          status_class="status-on"
+          status_color="#ef4444"          # merah
+          status_bg="rgba(239,68,68,0.15)"
         fi
-      else
-        # q == 0 → unlimited
-        quota_info="Unlimited"
-        status_label="AKTIF"
-        status_class="status-on"
       fi
     fi
   fi
 
-  local extra_note=""
-    case "$proto" in
-      shadowsocks)
-        extra_note="<div class=\"footer-note\">Rekomendasi: gunakan aplikasi <strong>Netmod / Netmod Syna</strong> untuk koneksi <strong>Shadowsocks WS 2022</strong>.</div>"
-        ;;
-      http|socks)
-        extra_note="<div class=\"footer-note\">Gunakan aplikasi <strong>Exclave</strong>. Atur network ke <strong>WebSocket</strong> dan isi <strong>Path Websocket</strong> manual: <code>/$path</code>.</div>"
-        ;;
-    esac
+  # Label protokol dan catatan rekomendasi aplikasi
+  local proto_label="${proto^^}"
+  local proto_note=""
+  case "$proto" in
+    shadowsocks)
+      proto_note="Gunakan aplikasi <strong>Netmod</strong> untuk koneksi Shadowsocks (disarankan)."
+      ;;
+    http)
+      proto_note="Gunakan aplikasi <strong>Exclave</strong> dengan network <strong>WS</strong>, lalu isi path manual: <code>/${path}</code>."
+      ;;
+    socks)
+      proto_note="Gunakan aplikasi <strong>Exclave</strong> dengan network <strong>WS</strong>, lalu isi path manual: <code>/${path}</code>."
+      ;;
+    vmess|vless|trojan)
+      proto_note="Bisa digunakan di aplikasi umum seperti <strong>v2ray / xray / clash</strong>."
+      ;;
+    *)
+      proto_note="Gunakan aplikasi klien yang mendukung protokol <strong>${proto_label}</strong>."
+      ;;
+  esac
 
-  local out="$WEB_PANEL_ACCOUNTS_DIR/$proto/$user.html"
+  local out_dir="${WEB_PANEL_DIR}/accounts/${proto}"
+  mkdir -p "$out_dir"
+  local file="${out_dir}/${user}.html"
 
-  cat > "$out" <<EOF
-<!doctype html>
-<html lang="en">
+  cat > "$file" <<EOF
+<!DOCTYPE html>
+<html lang="id">
 <head>
-  <meta charset="utf-8">
-  <title>Account $user – ${proto^^}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="UTF-8">
+  <title>Detail Akun XRAY - ${user}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
-    :root {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #0f172a;
-      color: #e5e7eb;
-    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
     body {
-      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       min-height: 100vh;
+      background:
+        radial-gradient(circle at top, #1d4ed8 0, transparent 55%),
+        radial-gradient(circle at bottom, #0f766e 0, #020617 60%);
+      color: #e5e7eb;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 24px;
+      padding: 16px;
     }
+
     .card {
-      max-width: 720px;
       width: 100%;
-      background: rgba(15,23,42,0.9);
-      border-radius: 16px;
-      padding: 24px 24px 20px;
-      box-shadow: 0 20px 40px rgba(0,0,0,0.6);
-      border: 1px solid rgba(148,163,184,0.4);
-      backdrop-filter: blur(16px);
+      max-width: 820px;
+      background: rgba(15,23,42,0.96);
+      border-radius: 24px;
+      box-shadow:
+        0 22px 45px rgba(15,23,42,0.9),
+        0 0 0 1px rgba(148,163,184,0.12);
+      padding: 24px 22px 20px;
+      backdrop-filter: blur(18px);
+      border: 1px solid rgba(148,163,184,0.25);
     }
-    .proto-pill {
-      display:inline-flex;
-      align-items:center;
-      gap:8px;
-      padding:4px 10px;
-      border-radius:999px;
-      background:rgba(59,130,246,0.1);
-      border:1px solid rgba(59,130,246,0.5);
-      font-size:12px;
-      letter-spacing:0.06em;
-      text-transform:uppercase;
-      color:#93c5fd;
+
+    @media (min-width: 640px) {
+      .card { padding: 28px 28px 22px; }
     }
-    .header-row {
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      gap:10px;
-      flex-wrap:wrap;
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 18px;
     }
-    .status-pill {
-      display:inline-flex;
-      align-items:center;
-      gap:6px;
-      padding:2px 10px;
-      border-radius:999px;
-      font-size:11px;
-      text-transform:uppercase;
-      letter-spacing:0.08em;
-    }
-    .status-on {
-      background:rgba(34,197,94,0.15);
-      border:1px solid rgba(34,197,94,0.7);
-      color:#bbf7d0;
-    }
-    .status-off {
-      background:rgba(248,113,113,0.15);
-      border:1px solid rgba(248,113,113,0.7);
-      color:#fecaca;
-    }
-    .footer-note {
-      margin-top:10px;
-      font-size:11px;
-      color:#e5e7eb;
-      background:#111827;
-      border-radius:10px;
-      padding:8px 10px;
-      border:1px dashed rgba(148,163,184,0.7);
-    }
-    .footer-note code {
-      font-size:11px;
-    }
-    h1 {
-      margin: 12px 0 4px;
-      font-size: 22px;
-    }
-    .meta {
-      font-size: 13px;
-      color: #9ca3af;
-      display:flex;
-      flex-wrap:wrap;
-      gap:10px 18px;
-    }
-    .meta span {
-      display:flex;
-      align-items:center;
-      gap:6px;
-    }
-    .label {
-      font-size: 12px;
+
+    .title-block h1 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: #9ca3af;
-      margin-top: 18px;
+      color: #e5e7eb;
       margin-bottom: 4px;
     }
-    .value-box {
-      background:#020617;
-      border-radius:10px;
-      padding:10px 12px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      font-size: 13px;
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      gap:8px;
-      border:1px solid rgba(31,41,55,0.9);
+
+    .title-block p {
+      font-size: 0.85rem;
+      color: #9ca3af;
     }
-    code {
+
+    .badge-proto {
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      font-weight: 600;
+      color: #f97316;
+      background: rgba(248, 171, 96, 0.08);
+      border: 1px solid rgba(248, 171, 96, 0.25);
+      white-space: nowrap;
+    }
+
+    .status-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 18px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      border: 1px solid transparent;
+      background: ${status_bg};
+      color: ${status_color};
+      border-color: ${status_color}40;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: ${status_color};
+      box-shadow: 0 0 12px ${status_color};
+    }
+
+    .status-text {
+      font-size: 0.8rem;
+      color: #9ca3af;
+    }
+
+    .section {
+      margin-top: 12px;
+      padding-top: 14px;
+      border-top: 1px dashed rgba(75,85,99,0.7);
+    }
+
+    .section + .section {
+      margin-top: 16px;
+    }
+
+    .section-title {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+      color: #9ca3af;
+      margin-bottom: 8px;
+    }
+
+    .kv-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(0, 2.2fr);
+      gap: 6px 14px;
+      font-size: 0.9rem;
+    }
+
+    .kv-label {
+      color: #9ca3af;
+    }
+
+    .kv-value {
+      color: #e5e7eb;
       word-break: break-all;
     }
-    button.copy {
-      border:none;
-      border-radius:999px;
-      padding:6px 10px;
-      font-size:11px;
-      text-transform:uppercase;
-      letter-spacing:0.08em;
-      background:#22c55e;
-      color:#022c22;
-      cursor:pointer;
+
+    .kv-value code {
+      background: #020617;
+      padding: 2px 6px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      border: 1px solid rgba(15,23,42,0.8);
     }
-    button.copy:hover {
-      filter:brightness(1.05);
+
+    .quota-box {
+      padding: 10px 12px;
+      border-radius: 16px;
+      background: radial-gradient(circle at top left, rgba(56,189,248,0.14), rgba(15,23,42,0.96));
+      border: 1px solid rgba(148,163,184,0.35);
+      display: grid;
+      gap: 6px;
+      font-size: 0.85rem;
     }
-    .links {
-      display:flex;
-      flex-direction:column;
-      gap:10px;
-      margin-top:8px;
+
+    .quota-top {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 6px;
+      align-items: center;
     }
-    a.conn-link {
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      gap:8px;
-      text-decoration:none;
-      background:#020617;
-      border-radius:10px;
-      padding:10px 12px;
-      border:1px solid rgba(31,41,55,0.9);
-      color:#e5e7eb;
-      font-size:13px;
+
+    .quota-label {
+      color: #e5e7eb;
+      font-weight: 500;
     }
-    .conn-link span.small {
-      font-size:11px;
-      text-transform:uppercase;
-      letter-spacing:0.08em;
-      color:#9ca3af;
+
+    .quota-value {
+      color: #f9fafb;
+      font-weight: 600;
     }
-    .badge {
-      font-size:11px;
-      padding:3px 8px;
-      border-radius:999px;
-      border:1px solid rgba(148,163,184,0.5);
-      color:#e5e7eb;
+
+    .quota-progress {
+      width: 100%;
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(15,23,42,0.9);
+      overflow: hidden;
+      border: 1px solid rgba(30,64,175,0.5);
     }
+
+    .quota-progress-fill {
+      height: 100%;
+      width: ${quota_percent}%;
+      max-width: 100%;
+      background: linear-gradient(90deg, #22c55e, #eab308, #ef4444);
+      box-shadow: 0 0 12px rgba(59,130,246,0.65);
+      transition: width 0.4s ease-out;
+    }
+
+    .quota-footnote {
+      font-size: 0.78rem;
+      color: #9ca3af;
+    }
+
+    .config-block {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 16px;
+      background: rgba(15,23,42,0.95);
+      border: 1px solid rgba(55,65,81,0.9);
+      display: grid;
+      gap: 6px;
+    }
+
+    .config-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .config-title {
+      font-size: 0.85rem;
+      color: #e5e7eb;
+      font-weight: 500;
+    }
+
+    .config-sub {
+      font-size: 0.76rem;
+      color: #9ca3af;
+    }
+
+    .config-body {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    pre {
+      margin: 0;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: #020617;
+      color: #e5e7eb;
+      font-size: 0.78rem;
+      max-height: 140px;
+      overflow: auto;
+      border: 1px solid rgba(31,41,55,0.95);
+      word-wrap: break-word;
+      white-space: pre-wrap;
+    }
+
+    .btn {
+      border: none;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      background: #1d4ed8;
+      color: #e5e7eb;
+      box-shadow: 0 9px 20px rgba(37,99,235,0.4);
+      transition: transform 0.08s ease-out, box-shadow 0.08s ease-out, background 0.08s ease-out;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 12px 26px rgba(37,99,235,0.55);
+      background: #2563eb;
+    }
+
+    .btn:active {
+      transform: translateY(0);
+      box-shadow: 0 5px 10px rgba(37,99,235,0.35);
+    }
+
+    .btn-outline {
+      background: transparent;
+      border: 1px solid rgba(148,163,184,0.6);
+      box-shadow: none;
+      color: #9ca3af;
+    }
+
+    .btn-outline:hover {
+      background: rgba(15,23,42,0.9);
+      color: #e5e7eb;
+    }
+
     .footer {
-      margin-top:16px;
-      font-size:11px;
-      color:#6b7280;
-      display:flex;
-      justify-content:space-between;
-      gap:8px;
-      flex-wrap:wrap;
+      margin-top: 16px;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+      font-size: 0.78rem;
+      color: #6b7280;
+      border-top: 1px dashed rgba(55,65,81,0.9);
+      padding-top: 10px;
+    }
+
+    .footer span strong {
+      color: #e5e7eb;
+    }
+
+    .note {
+      font-size: 0.8rem;
+      color: #9ca3af;
+      margin-top: 6px;
+    }
+
+    .note a {
+      color: #60a5fa;
+      text-decoration: none;
+    }
+
+    .note a:hover {
+      text-decoration: underline;
+    }
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 22px;
+      transform: translateX(-50%);
+      background: rgba(15,23,42,0.96);
+      color: #e5e7eb;
+      padding: 8px 14px;
+      font-size: 0.8rem;
+      border-radius: 999px;
+      border: 1px solid rgba(148,163,184,0.6);
+      box-shadow: 0 8px 22px rgba(15,23,42,0.9);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease-out, transform 0.2s ease-out;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translate(-50%, -4px);
     }
   </style>
 </head>
 <body>
   <div class="card">
-    <div class="header-row">
-      <div class="proto-pill">
-        <span>${proto^^}</span>
-        <span style="opacity:.7;">WS</span>
+    <div class="card-header">
+      <div class="title-block">
+        <h1>DETAIL AKUN XRAY</h1>
+        <p>${user}@${domain}</p>
       </div>
-      <span class="status-pill $status_class">$status_label</span>
-    </div>
-    <h1>$user@$domain</h1>
-    <div class="meta">
-      <span>📅 Created: $created</span>
-      <span>⏰ Expired: $exp</span>
-      <span>📦 Kuota: $quota_info</span>
-      <span>🛣️ Path: /$path</span>
+      <div class="badge-proto">${proto_label}</div>
     </div>
 
-    <div class="label">Credential Utama</div>
-    <div class="value-box">
-      <code>$secret</code>
-      <button class="copy" data-copy="$secret">Copy</button>
+    <div class="status-row">
+      <div class="status-pill">
+        <span class="status-dot"></span>
+        <span>Status: ${status_label}</span>
+      </div>
+      <span class="status-text">Akun akan nonaktif otomatis jika kuota habis atau lewat masa aktif.</span>
     </div>
 
-    <div class="label">Link Koneksi</div>
-    <div class="links">
-      <a class="conn-link" href="$link_tls">
-        <div>
-          <div><strong>TLS 443</strong></div>
-          <div class="small">WebSocket + TLS</div>
-        </div>
-        <span class="badge">COPY</span>
-      </a>
-      <a class="conn-link" href="$link_nontls">
-        <div>
-          <div><strong>Non-TLS 80</strong></div>
-          <div class="small">WS HTTP biasa</div>
-        </div>
-        <span class="badge">COPY</span>
-      </a>
+    <div class="section">
+      <div class="section-title">Informasi Akun</div>
+      <div class="kv-grid">
+        <div class="kv-label">Username</div>
+        <div class="kv-value"><strong>${user}</strong></div>
+
+        <div class="kv-label">Domain</div>
+        <div class="kv-value">${domain}</div>
+
+        <div class="kv-label">Path WS</div>
+        <div class="kv-value"><code>/${path}</code></div>
+
+        <div class="kv-label">ID / Password</div>
+        <div class="kv-value"><code>${secret}</code></div>
+
+        <div class="kv-label">Dibuat</div>
+        <div class="kv-value">${created}</div>
+
+        <div class="kv-label">Expired</div>
+        <div class="kv-value">${exp}</div>
+      </div>
     </div>
-$extra_note
+
+    <div class="section">
+      <div class="section-title">Kuota & Status</div>
+      <div class="quota-box">
+        <div class="quota-top">
+          <span class="quota-label">Pemakaian Kuota</span>
+          <span class="quota-value">${quota_text}</span>
+        </div>
+        <div class="quota-progress">
+          <div class="quota-progress-fill"></div>
+        </div>
+        <div class="quota-footnote">
+          Data kuota mengikuti pemantauan server &amp; akan diperbarui otomatis saat trafik berjalan / dicek dari menu.
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Konfigurasi</div>
+
+      <div class="config-block">
+        <div class="config-header">
+          <div>
+            <div class="config-title">Link TLS (Port 443)</div>
+            <div class="config-sub">Gunakan untuk koneksi aman (disarankan).</div>
+          </div>
+          <button class="btn" onclick="copyText('config-tls')">
+            <span>Copy</span>
+          </button>
+        </div>
+        <div class="config-body">
+          <pre id="config-tls">${link_tls}</pre>
+        </div>
+      </div>
+
+      <div class="config-block">
+        <div class="config-header">
+          <div>
+            <div class="config-title">Link Non-TLS / HTTP (Port 80)</div>
+            <div class="config-sub">Alternatif jika port 443 diblokir.</div>
+          </div>
+          <button class="btn btn-outline" onclick="copyText('config-nontls')">
+            <span>Copy</span>
+          </button>
+        </div>
+        <div class="config-body">
+          <pre id="config-nontls">${link_nontls}</pre>
+        </div>
+      </div>
+
+      <p class="note">
+        ${proto_note}
+      </p>
+    </div>
+
     <div class="footer">
-      <span>Generated by Xray Menu</span>
-      <span>Share link ini ke user ⮕</span>
+      <span>Panel: <strong>https://${domain}/panel/</strong></span>
+      <span>Generated oleh skrip XRAY menu</span>
     </div>
   </div>
 
-<script>
-document.querySelectorAll('button.copy').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const text = btn.getAttribute('data-copy');
-    navigator.clipboard.writeText(text).then(() => {
-      const old = btn.textContent;
-      btn.textContent = 'Copied';
-      setTimeout(() => btn.textContent = old, 1200);
-    });
-  });
-});
+  <div id="toast" class="toast">Tersalin ke clipboard</div>
 
-// Copy link TLS / Non-TLS ke clipboard saat kartu di-klik
-document.querySelectorAll('.conn-link').forEach(a => {
-  a.addEventListener('click', (e) => {
-    e.preventDefault(); // jangan buka link di browser
-    const text = a.getAttribute('data-copy') || a.getAttribute('href');
-    if (!text) return;
-    navigator.clipboard.writeText(text).then(() => {
-      const badge = a.querySelector('.badge');
-      if (badge) {
-        const old = badge.textContent;
-        badge.textContent = 'Copied';
-        setTimeout(() => badge.textContent = old, 1200);
+  <script>
+    function showToast(msg) {
+      var t = document.getElementById('toast');
+      if (!t) return;
+      t.textContent = msg || 'Tersalin ke clipboard';
+      t.classList.add('show');
+      setTimeout(function () {
+        t.classList.remove('show');
+      }, 1600);
+    }
+
+    function copyText(id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      var text = (el.textContent || el.innerText || '').trim();
+      if (!text) return;
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () {
+          showToast('Berhasil disalin');
+        }).catch(function () {
+          fallbackCopy(text);
+        });
+      } else {
+        fallbackCopy(text);
       }
-    });
-  });
-});
-</script>
+    }
+
+    function fallbackCopy(text) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      try {
+        document.execCommand('copy');
+        showToast('Berhasil disalin');
+      } catch (e) {
+        showToast('Gagal menyalin');
+      }
+      document.body.removeChild(ta);
+    }
+  </script>
 </body>
 </html>
 EOF
