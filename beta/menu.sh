@@ -1807,14 +1807,13 @@ render_account_html(){
   local link_tls="$8"
   local link_nontls="$9"
 
-  # --- Hitung kuota + status dari QUOTA_DB (kalau ada) ---
+  # --- Hitung Kuota ---
   local quota_total_bytes=0
   local quota_used_bytes=0
-  local quota_text="Tidak dibatasi"
+  local quota_text="Unlimited"
   local quota_percent=0
   local status_label="AKTIF"
-  local status_color="#22c55e"  # hijau
-  local status_bg="rgba(34,197,94,0.12)"
+  local status_class="status-active"
 
   if [[ -s "$QUOTA_DB" ]]; then
     local line
@@ -1834,32 +1833,85 @@ render_account_html(){
         (( quota_percent > 100 )) && quota_percent=100
 
         if (( quota_used_bytes >= quota_total_bytes )); then
-          status_label="NONAKTIF"
-          status_color="#ef4444"          # merah
-          status_bg="rgba(239,68,68,0.15)"
+          status_label="HABIS KUOTA"
+          status_class="status-inactive"
         fi
       fi
     fi
   fi
 
-  # Label protokol dan catatan rekomendasi aplikasi
-  local proto_label="${proto^^}"
-  local proto_note=""
+  # --- Generate Clash Config Snippet (Basic) ---
+  local clash_snippet=""
   case "$proto" in
+    vmess)
+      clash_snippet="- name: ${user}-vmess
+  type: vmess
+  server: ${domain}
+  port: 443
+  uuid: ${secret}
+  alterId: 0
+  cipher: auto
+  udp: true
+  tls: true
+  skip-cert-verify: true
+  servername: ${domain}
+  network: ws
+  ws-opts:
+    path: /${path}
+    headers:
+      Host: ${domain}"
+      ;;
+    vless)
+      clash_snippet="- name: ${user}-vless
+  type: vless
+  server: ${domain}
+  port: 443
+  uuid: ${secret}
+  cipher: auto
+  udp: true
+  tls: true
+  flow: 
+  skip-cert-verify: true
+  servername: ${domain}
+  network: ws
+  ws-opts:
+    path: /${path}
+    headers:
+      Host: ${domain}"
+      ;;
+    trojan)
+      clash_snippet="- name: ${user}-trojan
+  type: trojan
+  server: ${domain}
+  port: 443
+  password: ${secret}
+  udp: true
+  sni: ${domain}
+  skip-cert-verify: true
+  network: ws
+  ws-opts:
+    path: /${path}
+    headers:
+      Host: ${domain}"
+      ;;
     shadowsocks)
-      proto_note="Gunakan aplikasi <strong>Netmod</strong> untuk koneksi Shadowsocks (disarankan)."
-      ;;
-    http)
-      proto_note="Gunakan aplikasi <strong>Exclave</strong> dengan network <strong>WS</strong>, lalu isi path manual: <code>/${path}</code>."
-      ;;
-    socks)
-      proto_note="Gunakan aplikasi <strong>Exclave</strong> dengan network <strong>WS</strong>, lalu isi path manual: <code>/${path}</code>."
-      ;;
-    vmess|vless|trojan)
-      proto_note="Bisa digunakan di aplikasi umum seperti <strong>v2ray / xray / clash</strong>."
+      clash_snippet="- name: ${user}-ss
+  type: ss
+  server: ${domain}
+  port: 443
+  cipher: 2022-blake3-aes-128-gcm
+  password: \"$(get_ss_server_psk):${secret}\"
+  plugin: v2ray-plugin
+  plugin-opts:
+    mode: websocket
+    tls: true
+    skip-cert-verify: true
+    host: ${domain}
+    path: /${path}
+    mux: true"
       ;;
     *)
-      proto_note="Gunakan aplikasi klien yang mendukung protokol <strong>${proto_label}</strong>."
+      clash_snippet="# Clash config not supported for $proto yet."
       ;;
   esac
 
@@ -1872,515 +1924,218 @@ render_account_html(){
 <html lang="id">
 <head>
   <meta charset="UTF-8">
-  <title>Detail Akun XRAY - ${user}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>Akun ${proto^^} - ${user}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-
+    :root {
+      --bg: #0f172a; --card-bg: rgba(30, 41, 59, 0.7); --border: rgba(148, 163, 184, 0.2);
+      --primary: #6366f1; --primary-hover: #4f46e5; --text: #f8fafc; --text-muted: #94a3b8;
+      --success: #22c55e; --danger: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; }
     body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      min-height: 100vh;
-      background:
-        radial-gradient(circle at top, #1d4ed8 0, transparent 55%),
-        radial-gradient(circle at bottom, #0f172a 0, #020617 60%);
-      color: #e5e7eb;
-      padding: 10px 8px 18px;
+      background: radial-gradient(circle at top, #1e293b, var(--bg));
+      color: var(--text); min-height: 100vh; display: flex; justify-content: center; padding: 20px;
     }
-
-    @media (min-width: 640px) {
-      body { padding: 18px 12px 24px; }
+    .container {
+      width: 100%; max-width: 600px; background: var(--card-bg);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      border: 1px solid var(--border); border-radius: 24px; overflow: hidden;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
     }
-
-    .card {
-      width: 100%;
-      max-width: 720px;
-      margin: 0 auto;
-      background: rgba(15,23,42,0.98);
-      border-radius: 20px;
-      box-shadow:
-        0 18px 40px rgba(15,23,42,0.9),
-        0 0 0 1px rgba(148,163,184,0.18);
-      padding: 16px 14px 14px;
-      backdrop-filter: blur(16px);
-      border: 1px solid rgba(148,163,184,0.3);
+    .header {
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(168, 85, 247, 0.1));
+      padding: 30px 24px; border-bottom: 1px solid var(--border); text-align: center;
     }
-
-    @media (min-width: 640px) {
-      .card { padding: 20px 20px 16px; }
+    .proto-badge {
+      background: var(--primary); color: white; padding: 4px 12px; border-radius: 20px;
+      font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
     }
-
-    .card-header {
-      display: flex;
-      justify-content: space-between;
-      gap: 8px;
-      align-items: center;
-      margin-bottom: 10px;
+    .username { font-size: 24px; font-weight: 700; margin: 10px 0 5px; }
+    .domain { color: var(--text-muted); font-size: 14px; }
+    
+    .status-badge {
+      display: inline-flex; align-items: center; gap: 6px; padding: 6px 16px;
+      border-radius: 20px; font-size: 13px; font-weight: 600; margin-top: 15px;
     }
+    .status-active { background: rgba(34, 197, 94, 0.15); color: var(--success); border: 1px solid rgba(34, 197, 94, 0.3); }
+    .status-inactive { background: rgba(239, 68, 68, 0.15); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
 
-    .title-block h1 {
-      font-size: 1.05rem;
-      font-weight: 700;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      color: #e5e7eb;
-      margin-bottom: 2px;
+    .content { padding: 24px; }
+    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+    .info-item { background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border); }
+    .info-label { font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; margin-bottom: 4px; }
+    .info-val { font-size: 14px; font-weight: 500; word-break: break-all; }
+
+    /* Quota */
+    .quota-box { background: rgba(15, 23, 42, 0.4); padding: 16px; border-radius: 16px; border: 1px solid var(--border); margin-bottom: 24px; }
+    .quota-header { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; }
+    .progress-bar { width: 100%; height: 8px; background: #334155; border-radius: 4px; overflow: hidden; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, var(--success), #eab308); transition: width 0.5s ease; }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 8px; margin-bottom: 16px; background: rgba(15, 23, 42, 0.4); padding: 6px; border-radius: 12px; }
+    .tab-btn {
+      flex: 1; padding: 10px; border: none; background: transparent; color: var(--text-muted);
+      cursor: pointer; border-radius: 8px; font-weight: 600; transition: all 0.2s;
     }
+    .tab-btn.active { background: var(--primary); color: white; shadow: 0 4px 12px rgba(99, 102, 241, 0.3); }
+    
+    .tab-content { display: none; animation: fadeIn 0.3s ease; }
+    .tab-content.active { display: block; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
 
-    .title-block p {
-      font-size: 0.78rem;
-      color: #9ca3af;
+    /* Config Box */
+    .config-box { position: relative; margin-bottom: 16px; }
+    textarea {
+      width: 100%; background: #020617; color: #cbd5e1; border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px; font-family: monospace; font-size: 12px; resize: none;
+      height: 120px; outline: none;
     }
-
-    .badge-proto {
-      padding: 4px 10px;
-      border-radius: 999px;
-      font-size: 0.72rem;
-      letter-spacing: 0.17em;
-      text-transform: uppercase;
-      font-weight: 600;
-      color: #f97316;
-      background: rgba(248, 171, 96, 0.08);
-      border: 1px solid rgba(248, 171, 96, 0.25);
-      white-space: nowrap;
+    .copy-btn {
+      position: absolute; top: 8px; right: 8px; background: var(--primary); color: white;
+      border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer;
+      opacity: 0.9; transition: 0.2s;
     }
+    .copy-btn:hover { opacity: 1; transform: scale(1.05); }
 
-    .status-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      align-items: center;
-      margin-bottom: 10px;
-    }
-
-    .status-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 4px 10px;
-      border-radius: 999px;
-      font-size: 0.75rem;
-      font-weight: 600;
-      border: 1px solid transparent;
-      background: ${status_bg};
-      color: ${status_color};
-      border-color: ${status_color}40;
-    }
-
-    .status-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 999px;
-      background: ${status_color};
-      box-shadow: 0 0 10px ${status_color};
-    }
-
-    .status-text {
-      font-size: 0.78rem;
-      color: #9ca3af;
-      flex: 1;
-      min-width: 140px;
-    }
-
-    .section {
-      margin-top: 10px;
-      padding-top: 10px;
-      border-top: 1px dashed rgba(75,85,99,0.7);
-    }
-
-    .section + .section {
-      margin-top: 12px;
-    }
-
-    .section-title {
-      font-size: 0.78rem;
-      text-transform: uppercase;
-      letter-spacing: 0.18em;
-      color: #9ca3af;
-      margin-bottom: 6px;
-    }
-
-    .kv-grid {
-      display: grid;
-      grid-template-columns: minmax(0, 1.1fr) minmax(0, 2.1fr);
-      gap: 4px 12px;
-      font-size: 0.84rem;
-    }
-
-    .kv-label {
-      color: #9ca3af;
-    }
-
-    .kv-value {
-      color: #e5e7eb;
-      word-break: break-all;
-    }
-
-    .kv-value code {
-      background: #020617;
-      padding: 1px 5px;
-      border-radius: 5px;
-      font-size: 0.78rem;
-      border: 1px solid rgba(15,23,42,0.8);
-    }
-
-    .quota-box {
-      padding: 8px 10px;
-      border-radius: 14px;
-      background: radial-gradient(circle at top left, rgba(56,189,248,0.14), rgba(15,23,42,0.96));
-      border: 1px solid rgba(148,163,184,0.35);
-      display: grid;
-      gap: 5px;
-      font-size: 0.8rem;
-    }
-
-    .quota-top {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between;
-      gap: 4px;
-      align-items: center;
-    }
-
-    .quota-label {
-      color: #e5e7eb;
-      font-weight: 500;
-    }
-
-    .quota-value {
-      color: #f9fafb;
-      font-weight: 600;
-    }
-
-    .quota-progress {
-      width: 100%;
-      height: 5px;
-      border-radius: 999px;
-      background: rgba(15,23,42,0.9);
-      overflow: hidden;
-      border: 1px solid rgba(30,64,175,0.5);
-    }
-
-    .quota-progress-fill {
-      height: 100%;
-      width: ${quota_percent}%;
-      max-width: 100%;
-      background: linear-gradient(90deg, #22c55e, #eab308, #ef4444);
-      box-shadow: 0 0 10px rgba(59,130,246,0.65);
-      transition: width 0.4s ease-out;
-    }
-
-    .quota-footnote {
-      font-size: 0.74rem;
-      color: #9ca3af;
-    }
-
-    .config-block {
-      margin-top: 8px;
-      padding: 8px 10px;
-      border-radius: 14px;
-      background: rgba(15,23,42,0.97);
-      border: 1px solid rgba(55,65,81,0.9);
-      display: grid;
-      gap: 5px;
-    }
-
-    .config-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .config-title {
-      font-size: 0.8rem;
-      color: #e5e7eb;
-      font-weight: 500;
-    }
-
-    .config-sub {
-      font-size: 0.72rem;
-      color: #9ca3af;
-    }
-
-    .config-body {
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-    }
-
-    pre {
-      margin: 0;
-      padding: 7px 9px;
-      border-radius: 10px;
-      background: #020617;
-      color: #e5e7eb;
-      font-size: 0.76rem;
-      max-height: 120px;
-      overflow: auto;
-      border: 1px solid rgba(31,41,55,0.95);
-      word-wrap: break-word;
-      white-space: pre-wrap;
-    }
-
-    .btn {
-      border: none;
-      padding: 5px 10px;
-      border-radius: 999px;
-      font-size: 0.76rem;
-      font-weight: 500;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      white-space: nowrap;
-      background: #1d4ed8;
-      color: #e5e7eb;
-      box-shadow: 0 6px 16px rgba(37,99,235,0.45);
-      transition: transform 0.08s ease-out, box-shadow 0.08s ease-out, background 0.08s ease-out;
-    }
-
-    .btn:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 10px 22px rgba(37,99,235,0.6);
-      background: #2563eb;
-    }
-
-    .btn:active {
-      transform: translateY(0);
-      box-shadow: 0 4px 10px rgba(37,99,235,0.35);
-    }
-
-    .btn-outline {
-      background: transparent;
-      border: 1px solid rgba(148,163,184,0.6);
-      box-shadow: none;
-      color: #9ca3af;
-    }
-
-    .btn-outline:hover {
-      background: rgba(15,23,42,0.9);
-      color: #e5e7eb;
-    }
-
-    @media (max-width: 480px) {
-      .config-header {
-        flex-direction: column;
-        align-items: flex-start;
-      }
-      .btn, .btn-outline {
-        width: 100%;
-        justify-content: center;
-      }
-    }
-
-    .footer {
-      margin-top: 10px;
-      display: flex;
-      justify-content: space-between;
-      gap: 6px;
-      align-items: center;
-      font-size: 0.74rem;
-      color: #6b7280;
-      border-top: 1px dashed rgba(55,65,81,0.9);
-      padding-top: 8px;
-      flex-wrap: wrap;
-    }
-
-    .footer span strong {
-      color: #e5e7eb;
-    }
-
-    .note {
-      font-size: 0.78rem;
-      color: #9ca3af;
-      margin-top: 5px;
-    }
-
-    .note a {
-      color: #60a5fa;
-      text-decoration: none;
-    }
-
-    .note a:hover {
-      text-decoration: underline;
-    }
-
+    /* QR */
+    .qr-container { text-align: center; padding: 20px; background: white; border-radius: 16px; margin-top: 10px; width: fit-content; margin: 0 auto; }
+    
+    .footer { text-align: center; margin-top: 30px; font-size: 12px; color: var(--text-muted); }
     .toast {
-      position: fixed;
-      left: 50%;
-      bottom: 18px;
-      transform: translateX(-50%);
-      background: rgba(15,23,42,0.97);
-      color: #e5e7eb;
-      padding: 7px 12px;
-      font-size: 0.78rem;
-      border-radius: 999px;
-      border: 1px solid rgba(148,163,184,0.6);
-      box-shadow: 0 8px 20px rgba(15,23,42,0.9);
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.2s ease-out, transform 0.2s ease-out;
-      z-index: 50;
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%) translateY(100px);
+      background: #0f172a; color: white; padding: 10px 24px; border-radius: 50px;
+      border: 1px solid var(--primary); opacity: 0; transition: 0.3s; pointer-events: none; z-index: 100;
     }
-
-    .toast.show {
-      opacity: 1;
-      transform: translate(-50%, -3px);
-    }
+    .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="card-header">
-      <div class="title-block">
-        <h1>DETAIL AKUN XRAY</h1>
-        <p>${user}@${domain}</p>
-      </div>
-      <div class="badge-proto">${proto_label}</div>
-    </div>
 
-    <div class="status-row">
-      <div class="status-pill">
-        <span class="status-dot"></span>
-        <span>Status: ${status_label}</span>
-      </div>
-      <span class="status-text">Akun akan nonaktif otomatis jika kuota habis atau lewat masa aktif.</span>
-    </div>
-
-    <div class="section">
-      <div class="section-title">Informasi Akun</div>
-      <div class="kv-grid">
-        <div class="kv-label">Username</div>
-        <div class="kv-value"><strong>${user}</strong></div>
-
-        <div class="kv-label">Domain</div>
-        <div class="kv-value">${domain}</div>
-
-        <div class="kv-label">Path WS</div>
-        <div class="kv-value"><code>/${path}</code></div>
-
-        <div class="kv-label">ID / Password</div>
-        <div class="kv-value"><code>${secret}</code></div>
-
-        <div class="kv-label">Dibuat</div>
-        <div class="kv-value">${created}</div>
-
-        <div class="kv-label">Expired</div>
-        <div class="kv-value">${exp}</div>
-      </div>
-    </div>
-
-    <div class="section">
-      <div class="section-title">Kuota & Status</div>
-      <div class="quota-box">
-        <div class="quota-top">
-          <span class="quota-label">Pemakaian Kuota</span>
-          <span class="quota-value">${quota_text}</span>
-        </div>
-        <div class="quota-progress">
-          <div class="quota-progress-fill"></div>
-        </div>
-        <div class="quota-footnote">
-          Data kuota mengikuti pemantauan server &amp; akan diperbarui otomatis saat trafik berjalan / dicek dari menu.
-        </div>
-      </div>
-    </div>
-
-    <div class="section">
-      <div class="section-title">Konfigurasi</div>
-
-      <div class="config-block">
-        <div class="config-header">
-          <div>
-            <div class="config-title">Link TLS (Port 443)</div>
-            <div class="config-sub">Gunakan untuk koneksi aman (disarankan).</div>
-          </div>
-          <button class="btn" onclick="copyText('config-tls')">
-            <span>Copy</span>
-          </button>
-        </div>
-        <div class="config-body">
-          <pre id="config-tls">${link_tls}</pre>
-        </div>
-      </div>
-
-      <div class="config-block">
-        <div class="config-header">
-          <div>
-            <div class="config-title">Link Non-TLS / HTTP (Port 80)</div>
-            <div class="config-sub">Alternatif jika port 443 diblokir.</div>
-          </div>
-          <button class="btn btn-outline" onclick="copyText('config-nontls')">
-            <span>Copy</span>
-          </button>
-        </div>
-        <div class="config-body">
-          <pre id="config-nontls">${link_nontls}</pre>
-        </div>
-      </div>
-
-      <p class="note">
-        ${proto_note}
-      </p>
-    </div>
-
-    <div class="footer">
-      <span>Panel: <strong>https://${domain}/panel/</strong></span>
-      <span>Generated oleh skrip XRAY menu</span>
+<div class="container">
+  <div class="header">
+    <span class="proto-badge">${proto^^}</span>
+    <h1 class="username">${user}</h1>
+    <div class="domain">${domain}</div>
+    <div class="status-badge ${status_class}">
+      <span class="dot"></span> ${status_label}
     </div>
   </div>
 
-  <div id="toast" class="toast">Tersalin ke clipboard</div>
+  <div class="content">
+    <div class="info-grid">
+      <div class="info-item">
+        <div class="info-label">Expired</div>
+        <div class="info-val">${exp}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Path</div>
+        <div class="info-val">/${path}</div>
+      </div>
+      <div class="info-item" style="grid-column: span 2;">
+        <div class="info-label">Secret / UUID</div>
+        <div class="info-val" style="font-family: monospace;">${secret}</div>
+      </div>
+    </div>
 
-  <script>
-    function showToast(msg) {
-      var t = document.getElementById('toast');
-      if (!t) return;
-      t.textContent = msg || 'Tersalin ke clipboard';
-      t.classList.add('show');
-      setTimeout(function () {
-        t.classList.remove('show');
-      }, 1600);
-    }
+    <div class="quota-box">
+      <div class="quota-header">
+        <span style="color: var(--text-muted);">Penggunaan Kuota</span>
+        <strong>${quota_text}</strong>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill" style="width: ${quota_percent}%"></div>
+      </div>
+    </div>
 
-    function copyText(id) {
-      var el = document.getElementById(id);
-      if (!el) return;
-      var text = (el.textContent || el.innerText || '').trim();
-      if (!text) return;
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('link')">Link</button>
+      <button class="tab-btn" onclick="switchTab('qr')">QR Code</button>
+      <button class="tab-btn" onclick="switchTab('clash')">Clash YAML</button>
+    </div>
 
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(function () {
-          showToast('Berhasil disalin');
-        }).catch(function () {
-          fallbackCopy(text);
-        });
-      } else {
-        fallbackCopy(text);
-      }
-    }
+    <div id="tab-link" class="tab-content active">
+      <div class="config-box">
+        <div class="info-label" style="margin-bottom:5px;">TLS (Port 443) - Rekomendasi</div>
+        <textarea id="tls-text" readonly>${link_tls}</textarea>
+        <button class="copy-btn" onclick="copyToClip('tls-text')">Salin</button>
+      </div>
+      <div class="config-box">
+        <div class="info-label" style="margin-bottom:5px;">Non-TLS (Port 80)</div>
+        <textarea id="nontls-text" readonly>${link_nontls}</textarea>
+        <button class="copy-btn" style="background:#475569;" onclick="copyToClip('nontls-text')">Salin</button>
+      </div>
+    </div>
 
-    function fallbackCopy(text) {
-      var ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.left = '-9999px';
-      document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
-      try {
-        document.execCommand('copy');
-        showToast('Berhasil disalin');
-      } catch (e) {
-        showToast('Gagal menyalin');
-      }
-      document.body.removeChild(ta);
-    }
-  </script>
+    <div id="tab-qr" class="tab-content" style="text-align: center;">
+      <div class="info-label">Scan untuk TLS (Port 443)</div>
+      <div class="qr-container">
+        <canvas id="qr-canvas"></canvas>
+      </div>
+    </div>
+
+    <div id="tab-clash" class="tab-content">
+      <div class="config-box">
+        <div class="info-label" style="margin-bottom:5px;">Proxy Provider Snippet</div>
+        <textarea id="clash-text" readonly>${clash_snippet}</textarea>
+        <button class="copy-btn" onclick="copyToClip('clash-text')">Salin</button>
+      </div>
+    </div>
+
+    <div class="footer">
+      Generated by AutoScript Xray<br>
+      Panel: <a href="../../index.html" style="color:var(--primary);text-decoration:none;">Kembali ke Daftar Akun</a>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast">Berhasil disalin!</div>
+
+<script>
+  // Inisialisasi QR Code
+  (function() {
+    var qr = new QRious({
+      element: document.getElementById('qr-canvas'),
+      value: document.getElementById('tls-text').value,
+      size: 200,
+      level: 'M'
+    });
+  })();
+
+  // Fungsi Tabs
+  function switchTab(tabName) {
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+    
+    document.getElementById('tab-' + tabName).classList.add('active');
+    event.target.classList.add('active');
+  }
+
+  // Fungsi Copy
+  function copyToClip(elementId) {
+    var copyText = document.getElementById(elementId);
+    copyText.select();
+    copyText.setSelectionRange(0, 99999);
+    navigator.clipboard.writeText(copyText.value).then(() => {
+      showToast();
+    });
+  }
+
+  function showToast() {
+    var x = document.getElementById("toast");
+    x.classList.add("show");
+    setTimeout(function(){ x.classList.remove("show"); }, 2000);
+  }
+</script>
+
 </body>
 </html>
 EOF
 }
+
 
 # Sinkronkan info kuota di web panel dengan quota.db
 sync_quota_to_webpanel(){
@@ -2408,638 +2163,164 @@ sync_quota_to_webpanel(){
 }
 
 rebuild_web_index(){
-  mkdir -p "$WEB_PANEL_DIR/accounts"
   local out="$WEB_PANEL_DIR/index.html"
+  mkdir -p "$WEB_PANEL_DIR/accounts"
 
-  cat > "$out" <<'EOF'
+  # Data JSON untuk pencarian client-side
+  local json_data="["
+  local first=1
+  
+  for p in vmess vless trojan shadowsocks http socks; do
+    local f="$ACCOUNTS_DIR/$p.db"
+    if [[ -f "$f" ]]; then
+      while IFS='|' read -r u s e c q; do
+        [[ -z "$u" ]] && continue
+        if [[ $first -eq 0 ]]; then json_data+=","; fi
+        
+        # Hitung status sederhana
+        local q_info="Unlimited"
+        local status="active"
+        
+        # Cek quota DB
+        local qline=$(grep "^$u|" "$QUOTA_DB" 2>/dev/null || true)
+        if [[ -n "$qline" ]]; then
+           local qtot=$(echo "$qline" | cut -d'|' -f2)
+           local qused=$(echo "$qline" | cut -d'|' -f3)
+           [[ -z "$qused" ]] && qused=0
+           
+           if (( qtot > 0 )); then
+             if (( qused >= qtot )); then status="inactive"; fi
+           fi
+        fi
+        
+        json_data+="{\"user\":\"$u\",\"proto\":\"$p\",\"exp\":\"$e\",\"status\":\"$status\"}"
+        first=0
+      done < "$f"
+    fi
+  done
+  json_data+="]"
+
+  cat > "$out" <<EOF
 <!DOCTYPE html>
 <html lang="id">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Xray Accounts</title>
+  <meta charset="UTF-8">
+  <title>Xray Panel - Daftar Akun</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     :root {
-      --bg: #050711;
-      --bg-soft: #0e111b;
-      --accent: #4f46e5;
-      --accent-soft: rgba(79,70,229,0.1);
-      --text: #f9fafb;
-      --text-soft: #9ca3af;
-      --danger: #f97373;
-      --danger-soft: rgba(248,113,113,0.08);
-      --border: #1f2933;
-      --radius-card: 18px;
+      --bg: #0f172a; --card-bg: rgba(30, 41, 59, 0.6); --border: rgba(148, 163, 184, 0.2);
+      --primary: #6366f1; --text: #f8fafc; --text-muted: #94a3b8;
     }
-    * {
-      box-sizing: border-box;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
-                   "Segoe UI", sans-serif;
-    }
+    * { box-sizing: border-box; font-family: 'Segoe UI', system-ui, sans-serif; }
     body {
-      margin: 0;
-      min-height: 100vh;
-      background: radial-gradient(circle at top, #111827 0, #020617 55%, #000 100%);
-      color: var(--text);
-      display: flex;
-      justify-content: center;
-      padding: 24px 8px 40px;
+      background: var(--bg); color: var(--text); padding: 20px; min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center; margin: 0;
     }
-    .container {
-      width: 100%;
-      max-width: 980px;
-      background: linear-gradient(135deg, rgba(148,163,184,0.12), rgba(15,23,42,0.92));
-      border-radius: 24px;
-      padding: 20px 16px 24px;
-      border: 1px solid rgba(148,163,184,0.3);
-      box-shadow:
-        0 24px 60px rgba(15,23,42,0.9),
-        0 0 0 1px rgba(15,23,42,0.9);
-      backdrop-filter: blur(22px);
-    }
-    @media (min-width: 768px) {
-      .container { padding: 22px 22px 26px; }
-    }
+    .header { text-align: center; margin-bottom: 30px; margin-top: 20px; }
+    .header h1 { margin: 0; font-size: 28px; background: linear-gradient(to right, #818cf8, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .header p { color: var(--text-muted); margin-top: 5px; }
 
-    .header {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      margin-bottom: 16px;
-    }
-    .title-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-    h1 {
-      font-size: 24px;
-      letter-spacing: 0.03em;
-      margin: 0;
-    }
-    .chip {
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.16em;
-      padding: 4px 10px;
-      border-radius: 999px;
-      background: rgba(15,23,42,0.9);
-      border: 1px solid rgba(148,163,184,0.45);
-      color: var(--text-soft);
-    }
-    .subtitle {
-      font-size: 13px;
-      color: var(--text-soft);
-      max-width: 640px;
-    }
-
-    .toolbar {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      margin-bottom: 18px;
-    }
-    @media (min-width: 640px) {
-      .toolbar { flex-direction: row; align-items: center; }
-    }
     .search-box {
-      position: relative;
-      flex: 1;
+      width: 100%; max-width: 500px; margin-bottom: 30px; position: relative;
     }
     .search-input {
-      width: 100%;
-      padding: 9px 10px 9px 32px;
-      border-radius: 999px;
-      border: 1px solid rgba(55,65,81,0.9);
-      background: rgba(15,23,42,0.9);
-      color: var(--text);
-      font-size: 13px;
-      outline: none;
+      width: 100%; padding: 14px 20px; border-radius: 50px; border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.8); color: white; outline: none; font-size: 16px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.2); transition: 0.3s;
     }
-    .search-input::placeholder { color: #6b7280; }
-    .search-icon {
-      position: absolute;
-      left: 10px;
-      top: 50%;
-      transform: translateY(-50%);
-      font-size: 13px;
-      color: #6b7280;
-    }
-    .toolbar-right {
-      display: flex;
-      gap: 6px;
-    }
-    .btn {
-      border: 1px solid rgba(148,163,184,0.5);
-      background: rgba(15,23,42,0.9);
-      color: var(--text);
-      border-radius: 999px;
-      padding: 7px 14px;
-      font-size: 12px;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      line-height: 1;
-      white-space: nowrap;
-    }
-    .btn-primary {
-      background: linear-gradient(135deg, #6366f1, #4f46e5);
-      border-color: transparent;
-    }
-    .btn-danger {
-      background: var(--danger-soft);
-      border-color: rgba(248,113,113,0.6);
-      color: #fecaca;
-    }
-    .btn:disabled {
-      opacity: 0.55;
-      cursor: default;
-    }
+    .search-input:focus { border-color: var(--primary); box-shadow: 0 4px 25px rgba(99, 102, 241, 0.2); }
 
-    .layout {
-      display: grid;
-      grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.9fr);
-      gap: 14px;
-    }
-    @media (max-width: 799px) {
-      .layout {
-        grid-template-columns: minmax(0,1fr);
-      }
-    }
-
-    .card-box {
-      background: rgba(15,23,42,0.95);
-      border-radius: 18px;
-      padding: 12px 10px 12px;
-      border: 1px solid rgba(31,41,55,0.9);
-      box-shadow: inset 0 0 0 1px rgba(15,23,42,0.9);
-    }
-    .card-box-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      margin-bottom: 8px;
-    }
-    .card-box-title {
-      font-size: 13px;
-      font-weight: 600;
-    }
-    .card-box-subtitle {
-      font-size: 11px;
-      color: var(--text-soft);
-    }
-
-    .cards {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-      gap: 8px;
+    .grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 16px; width: 100%; max-width: 1000px;
     }
     .card {
-      position: relative;
-      background: radial-gradient(circle at top left, rgba(79,70,229,0.06), rgba(15,23,42,1));
-      border-radius: var(--radius-card);
-      padding: 10px 10px 11px;
-      border: 1px solid rgba(55,65,81,0.9);
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease, background 120ms ease;
+      background: var(--card-bg); border: 1px solid var(--border); border-radius: 16px;
+      padding: 16px 20px; text-decoration: none; color: inherit; transition: 0.2s;
+      display: flex; flex-direction: column; justify-content: space-between;
+      backdrop-filter: blur(10px);
     }
-    .card:hover {
-      transform: translateY(-1.5px);
-      border-color: rgba(129,140,248,0.95);
-      box-shadow: 0 10px 25px rgba(15,23,42,0.9);
-      background: radial-gradient(circle at top left, rgba(79,70,229,0.16), rgba(15,23,42,1));
+    .card:hover { transform: translateY(-3px); background: rgba(51, 65, 85, 0.7); border-color: var(--primary); }
+    
+    .card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .proto-tag {
+      font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 3px 8px;
+      border-radius: 6px; background: rgba(99, 102, 241, 0.2); color: #a5b4fc;
     }
-    .tag {
-      align-self: flex-start;
-      padding: 2px 9px;
-      border-radius: 999px;
-      font-size: 10px;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      background: rgba(30,64,175,0.25);
-      border: 1px solid rgba(129,140,248,0.6);
-      color: #c7d2fe;
-    }
-    .user {
-      font-size: 14px;
-      font-weight: 600;
-    }
-    .meta, .quota-row {
-      display: flex;
-      justify-content: space-between;
-      font-size: 11px;
-      color: var(--text-soft);
-      gap: 4px;
-    }
-    .status {
-      font-size: 11px;
-      padding: 3px 8px;
-      border-radius: 999px;
-      align-self: flex-start;
-      border: 1px solid rgba(55,65,81,0.9);
-      background: rgba(15,23,42,0.9);
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .status-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 999px;
-      background: #6b7280;
-    }
-    .status-aktif {
-      border-color: rgba(34,197,94,0.65);
-      color: #bbf7d0;
-      background: rgba(22,163,74,0.12);
-    }
-    .status-aktif .status-dot { background: #22c55e; }
-    .status-nonaktif {
-      border-color: rgba(248,113,113,0.75);
-      color: #fecaca;
-      background: rgba(248,113,113,0.12);
-    }
-    .status-nonaktif .status-dot { background: #f97373; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .active { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+    .inactive { background: #ef4444; box-shadow: 0 0 8px #ef4444; }
 
-    .actions {
-      display: flex;
-      gap: 6px;
-      margin-top: 4px;
-      flex-wrap: wrap;
-    }
-    .btn-xs {
-      font-size: 11px;
-      padding: 4px 8px;
-      border-radius: 999px;
-      border: 1px solid rgba(55,65,81,0.95);
-      background: rgba(15,23,42,0.95);
-      color: var(--text-soft);
-      cursor: pointer;
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-    }
-    .btn-xs-primary {
-      color: #c7d2fe;
-      border-color: rgba(129,140,248,0.9);
-      background: radial-gradient(circle at top left, rgba(79,70,229,0.32), rgba(15,23,42,1));
-    }
-    .btn-xs-danger {
-      color: #fecaca;
-      border-color: rgba(248,113,113,0.9);
-      background: rgba(127,29,29,0.85);
-    }
-
-    .empty-state {
-      padding: 18px 14px;
-      border-radius: 16px;
-      background: rgba(15,23,42,0.96);
-      border: 1px dashed rgba(55,65,81,0.9);
-      font-size: 12px;
-      color: var(--text-soft);
-    }
-
-    .form-box {
-      background: rgba(15,23,42,0.98);
-      border-radius: 18px;
-      padding: 12px 12px 14px;
-      border: 1px solid rgba(31,41,55,0.9);
-      box-shadow: inset 0 0 0 1px rgba(15,23,42,0.95);
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    .form-title {
-      font-size: 13px;
-      font-weight: 600;
-    }
-    .form-subtitle {
-      font-size: 11px;
-      color: var(--text-soft);
-    }
-    .form-grid {
-      display: grid;
-      grid-template-columns: repeat(2,minmax(0,1fr));
-      gap: 8px;
-    }
-    @media (max-width: 480px) {
-      .form-grid { grid-template-columns: minmax(0,1fr); }
-    }
-    .field {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-    label {
-      font-size: 11px;
-      color: var(--text-soft);
-    }
-    select, input[type="text"], input[type="number"] {
-      width: 100%;
-      padding: 7px 8px;
-      border-radius: 10px;
-      border: 1px solid rgba(55,65,81,0.95);
-      background: #020617;
-      color: var(--text);
-      font-size: 12px;
-      outline: none;
-    }
-    select:focus, input:focus {
-      border-color: rgba(129,140,248,0.95);
-      box-shadow: 0 0 0 1px rgba(129,140,248,0.6);
-    }
-
-    .helper {
-      font-size: 10px;
-      color: var(--text-soft);
-      line-height: 1.4;
-    }
-    .footer {
-      margin-top: 12px;
-      font-size: 10px;
-      color: var(--text-soft);
-      text-align: right;
-    }
+    .user-name { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+    .card-btm { font-size: 12px; color: var(--text-muted); display: flex; justify-content: space-between; margin-top: 12px; }
+    
+    .empty { text-align: center; color: var(--text-muted); grid-column: 1 / -1; margin-top: 40px; display: none; }
   </style>
 </head>
 <body>
-<div class="container">
-  <header class="header">
-    <div class="title-row">
-      <h1>Xray Accounts</h1>
-      <span class="chip">Web Panel &amp; Menu Bridge</span>
-    </div>
-    <p class="subtitle">
-      Kelola akun Xray langsung dari web: buat akun baru, perpanjang masa aktif, hapus akun,
-      dan lihat status kuota aktif/nonaktif.
-    </p>
-  </header>
 
-  <div class="toolbar">
-    <div class="search-box">
-      <span class="search-icon">🔍</span>
-      <input id="search" class="search-input" placeholder="Cari username atau proto (vmess, vless, trojan, ...)" />
-    </div>
-    <div class="toolbar-right">
-      <button id="refresh-btn" class="btn">
-        ⟳ Refresh
-      </button>
-    </div>
-  </div>
-
-  <div class="layout">
-    <!-- Daftar Akun -->
-    <section class="card-box">
-      <div class="card-box-header">
-        <div>
-          <div class="card-box-title">Daftar Akun</div>
-          <div class="card-box-subtitle">Klik tombol di kartu untuk detail, perpanjang, atau hapus.</div>
-        </div>
-      </div>
-      <div id="account-list" class="cards"></div>
-      <div id="account-empty" class="empty-state" style="display:none">
-        Belum ada akun. Gunakan formulir di samping untuk membuat akun Xray pertama.
-      </div>
-    </section>
-
-    <!-- Form Buat Akun -->
-    <aside class="form-box">
-      <div>
-        <div class="form-title">Buat Akun Baru</div>
-        <div class="form-subtitle">Form ini memanggil <code>/usr/local/bin/menu --api-create</code> lewat <code>api.php</code>.</div>
-      </div>
-      <form id="create-form">
-        <div class="form-grid">
-          <div class="field">
-            <label for="proto">Protocol</label>
-            <select id="proto" name="proto">
-              <option value="vless">VLESS</option>
-              <option value="vmess">VMESS</option>
-              <option value="trojan">TROJAN</option>
-              <option value="shadowsocks">SHADOWSOCKS</option>
-              <option value="http">HTTP</option>
-              <option value="socks">SOCKS</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="user">Username</label>
-            <input id="user" name="user" type="text" required autocomplete="off" />
-          </div>
-          <div class="field">
-            <label for="days">Masa aktif (hari)</label>
-            <input id="days" name="days" type="number" min="1" value="30" />
-          </div>
-          <div class="field">
-            <label for="quota_gb">Kuota (GB, 0 = bebas)</label>
-            <input id="quota_gb" name="quota_gb" type="number" min="0" value="0" />
-          </div>
-        </div>
-        <button type="submit" class="btn btn-primary" id="create-submit">+ Buat Akun</button>
-      </form>
-      <div class="helper">
-        Aksi lanjutan (set kuota detail, blokir/unblokir kuota, ganti domain, rute manajemen) tetap bisa
-        dilakukan dari menu terminal seperti biasa. Web panel fokus ke operasi akun utama.
-      </div>
-      <div class="footer">
-        Panel ini membaca data dari <code>quota.db</code> dan berkas <code>accounts/*.db</code>.
-      </div>
-    </aside>
-  </div>
+<div class="header">
+  <h1>Xray Accounts</h1>
+  <p>Manajemen & Informasi Akun</p>
 </div>
 
+<div class="search-box">
+  <input type="text" id="search" class="search-input" placeholder="Cari username atau protokol..." onkeyup="filterList()">
+</div>
+
+<div class="grid" id="card-grid">
+  </div>
+<div class="empty" id="empty-msg">Tidak ada akun ditemukan.</div>
+
 <script>
-const apiAccounts = '/panel/api/accounts';   // Flask
-const apiMenu     = '/panel/api.php';       // PHP → /usr/local/bin/menu --api-*
+  const accounts = $json_data;
 
-function formatBytes(b) {
-  b = Number(b || 0);
-  if (!b) return '0B';
-  const units = ['B','KB','MB','GB','TB'];
-  let i = 0;
-  while (b >= 1024 && i < units.length - 1) {
-    b /= 1024;
-    i++;
-  }
-  const digits = i === 0 ? 0 : 1;
-  return b.toFixed(digits) + units[i];
-}
-
-function statusFromQuota(total, used) {
-  total = Number(total || 0);
-  used  = Number(used  || 0);
-  if (total > 0 && used >= total) return 'nonaktif';
-  return 'aktif';
-}
-
-function applySearchFilter() {
-  const q = document.getElementById('search').value.toLowerCase();
-  const cards = document.querySelectorAll('#account-list .card');
-  cards.forEach(card => {
-    const txt = (card.dataset.user + ' ' + card.dataset.proto).toLowerCase();
-    card.style.display = txt.includes(q) ? '' : 'none';
-  });
-}
-
-function setEmptyState(show) {
-  const emptyEl = document.getElementById('account-empty');
-  const listEl  = document.getElementById('account-list');
-  emptyEl.style.display = show ? '' : 'none';
-  if (show) listEl.innerHTML = '';
-}
-
-async function loadAccounts() {
-  try {
-    const res = await fetch(apiAccounts, {cache: 'no-store'});
-    const data = await res.json();
-    if (!data.ok) {
-      console.error('API /accounts error:', data);
-      setEmptyState(true);
+  function render(list) {
+    const container = document.getElementById('card-grid');
+    const empty = document.getElementById('empty-msg');
+    container.innerHTML = '';
+    
+    if (list.length === 0) {
+      empty.style.display = 'block';
       return;
     }
-    renderAccounts(data.accounts || []);
-  } catch (e) {
-    console.error('Gagal load /accounts:', e);
-    setEmptyState(true);
-  }
-}
+    empty.style.display = 'none';
 
-function renderAccounts(accounts) {
-  const listEl = document.getElementById('account-list');
-  listEl.innerHTML = '';
-  if (!accounts.length) {
-    setEmptyState(true);
-    return;
-  }
-  setEmptyState(false);
-
-  for (const acc of accounts) {
-    const quotaTotal = acc.quota_total || 0;
-    const quotaUsed  = acc.quota_used  || 0;
-    const status     = statusFromQuota(quotaTotal, quotaUsed);
-
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.dataset.user  = acc.user;
-    card.dataset.proto = acc.proto;
-
-    card.innerHTML = `
-      <span class="tag">${(acc.proto || '').toUpperCase()}</span>
-      <div class="user">${acc.user}</div>
-      <div class="meta">
-        <span>Dibuat: ${acc.created || '-'}</span>
-        <span>Exp: ${acc.expired || '-'}</span>
-      </div>
-      <div class="quota-row">
-        <span>Kuota:</span>
-        <span>${formatBytes(quotaUsed)} / ${formatBytes(quotaTotal)}</span>
-      </div>
-      <div class="status status-${status}">
-        <span class="status-dot"></span>
-        <span>${status === 'aktif' ? 'Aktif' : 'Nonaktif (kuota habis)'}</span>
-      </div>
-      <div class="actions">
-        <a class="btn-xs btn-xs-primary" href="accounts/${acc.proto}/${acc.user}.html" target="_blank">Detail</a>
-        <button type="button" class="btn-xs" data-act="extend">Perpanjang</button>
-        <button type="button" class="btn-xs btn-xs-danger" data-act="delete">Hapus</button>
-      </div>
-    `;
-    listEl.appendChild(card);
-  }
-  applySearchFilter();
-}
-
-async function callMenuApi(action, payload) {
-  const params = new URLSearchParams({ action, ...payload });
-  const res = await fetch(apiMenu, {
-    method: 'POST',
-    body: params
-  });
-  let data;
-  try {
-    data = await res.json();
-  } catch (e) {
-    throw new Error('Gagal parse respon server');
-  }
-  if (!data.ok) {
-    throw new Error(data.error || data.output || 'Perintah gagal');
-  }
-  return data;
-}
-
-document.getElementById('search').addEventListener('input', applySearchFilter);
-document.getElementById('refresh-btn').addEventListener('click', loadAccounts);
-
-document.getElementById('create-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const btn = document.getElementById('create-submit');
-
-  const proto    = document.getElementById('proto').value.trim();
-  const user     = document.getElementById('user').value.trim();
-  const days     = document.getElementById('days').value.trim() || '30';
-  const quota_gb = document.getElementById('quota_gb').value.trim() || '0';
-
-  if (!proto || !user) {
-    alert('Proto dan username wajib diisi.');
-    return;
+    list.forEach(acc => {
+      const statusClass = acc.status === 'active' ? 'active' : 'inactive';
+      const html = \`
+        <a href="accounts/\${acc.proto}/\${acc.user}.html" class="card">
+          <div class="card-top">
+            <span class="proto-tag">\${acc.proto}</span>
+            <div class="status-dot \${statusClass}"></div>
+          </div>
+          <div>
+            <div class="user-name">\${acc.user}</div>
+          </div>
+          <div class="card-btm">
+            <span>Exp: \${acc.exp}</span>
+            <span>Detail &rarr;</span>
+          </div>
+        </a>
+      \`;
+      container.innerHTML += html;
+    });
   }
 
-  btn.disabled = true;
-  try {
-    await callMenuApi('create', { proto, user, days, quota_gb });
-    await loadAccounts();
-    document.getElementById('create-form').reset();
-    document.getElementById('days').value = '30';
-    document.getElementById('quota_gb').value = '0';
-  } catch (e2) {
-    alert('Gagal membuat akun: ' + e2.message);
-  } finally {
-    btn.disabled = false;
+  function filterList() {
+    const query = document.getElementById('search').value.toLowerCase();
+    const filtered = accounts.filter(acc => 
+      acc.user.toLowerCase().includes(query) || 
+      acc.proto.toLowerCase().includes(query)
+    );
+    render(filtered);
   }
-});
 
-document.getElementById('account-list').addEventListener('click', async (e) => {
-  const btn = e.target.closest('button');
-  if (!btn) return;
-  const card  = btn.closest('.card');
-  const proto = card.dataset.proto;
-  const user  = card.dataset.user;
-  const act   = btn.dataset.act;
-
-  if (act === 'delete') {
-    if (!confirm(`Hapus akun ${user} (${proto})?`)) return;
-    btn.disabled = true;
-    try {
-      await callMenuApi('delete', { proto, user });
-      card.remove();
-      if (!document.querySelector('#account-list .card')) setEmptyState(true);
-    } catch (e2) {
-      alert('Gagal hapus akun: ' + e2.message);
-    } finally {
-      btn.disabled = false;
-    }
-  } else if (act === 'extend') {
-    const days = prompt('Tambah berapa hari?', '30');
-    if (!days) return;
-    btn.disabled = true;
-    try {
-      await callMenuApi('extend', { proto, user, days });
-      await loadAccounts();
-    } catch (e2) {
-      alert('Gagal perpanjang akun: ' + e2.message);
-    } finally {
-      btn.disabled = false;
-    }
-  }
-});
-
-loadAccounts();
+  // Render awal
+  render(accounts);
 </script>
+
 </body>
 </html>
 EOF
