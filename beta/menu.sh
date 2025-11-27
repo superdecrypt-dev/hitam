@@ -21,6 +21,142 @@ XRAY_API_SERVER="127.0.0.1:10000"
 WEB_PANEL_DIR="$ASSET_DIR/webpanel"
 WEB_PANEL_ACCOUNTS_DIR="$WEB_PANEL_DIR/accounts"
 
+# API MODE HANDLER (PHP BRIDGE)
+# Blok ini menangani perintah dari api.php
+# Format output: JSON
+
+api_response() {
+    local status="$1"
+    local msg="$2"
+    local extra="$3"
+    echo "{\"status\":\"$status\",\"message\":\"$msg\"${extra}}"
+}
+
+if [[ "$1" == "--api-list" ]]; then
+    # Generate JSON daftar akun
+    json_data="["
+    first=1
+    for p in vmess vless trojan shadowsocks http socks; do
+        f="$ACCOUNTS_DIR/$p.db"
+        if [[ -f "$f" ]]; then
+            while IFS='|' read -r u s e c q; do
+                [[ -z "$u" ]] && continue
+                [[ $first -eq 0 ]] && json_data+=","
+                
+                # Cek status kuota
+                local q_text="Unlimited"
+                local status="active"
+                if [[ -s "$QUOTA_DB" ]]; then
+                   local qline=$(grep "^$u|" "$QUOTA_DB" 2>/dev/null || true)
+                   if [[ -n "$qline" ]]; then
+                       local qtot=$(echo "$qline" | cut -d'|' -f2)
+                       local qused=$(echo "$qline" | cut -d'|' -f3)
+                       [[ -z "$qused" ]] && qused=0
+                       q_text="$(bytes_to_human "$qused") / $(bytes_to_human "$qtot")"
+                       if (( qtot > 0 )); then
+                           if (( qused >= qtot )); then status="inactive"; fi
+                       fi
+                   fi
+                fi
+
+                json_data+="{\"user\":\"$u\",\"proto\":\"$p\",\"exp\":\"$e\",\"created\":\"$c\",\"quota\":\"$q_text\",\"status\":\"$status\"}"
+                first=0
+            done < "$f"
+        fi
+    done
+    json_data+="]"
+    
+    echo "{\"status\":\"success\",\"data\":$json_data}"
+    exit 0
+fi
+
+if [[ "$1" == "--api-create" ]]; then
+    # Usage: --api-create [proto] [user] [days] [quota]
+    proto="$2"; user="$3"; days="$4"; quota="$5"
+    
+    if username_exists_any_proto "$user"; then
+        api_response "error" "Username $user sudah ada."
+        exit 0
+    fi
+    
+    # Setup Variable
+    domain="$(get_domain)"; path="$(get_ws_path "$proto")"
+    secret=""
+    case "$proto" in 
+        vmess|vless) secret="$(/usr/local/bin/xray uuid)";; 
+        trojan|http|socks) secret="$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16)";; 
+        shadowsocks) secret="$(openssl rand -base64 16)";; 
+    esac
+    
+    # Add Client Logic (Copied from interactive)
+    case "$proto" in
+        vmess|vless|trojan|shadowsocks) add_client_std "$proto" "$user" "$secret";;
+        http|socks) add_client_acct "$proto" "$user" "$secret";;
+    esac
+    
+    restart_xray
+    
+    created="$(date +%F)"; exp="$(date -d "+$days days" +%F)"
+    ledger_add "$proto" "$user" "$secret" "$exp" "$created" "$quota"
+    
+    # Quota Logic
+    if [[ "$quota" =~ ^[0-9]+$ ]] && (( quota > 0 )); then
+        local quota_bytes=$((quota * 1024 * 1024 * 1024))
+        # Initial Stats (simplified)
+        echo "$user|$quota_bytes|0|0|0" >> "$QUOTA_DB"
+    fi
+    
+    # Generate Files
+    # (Panggil update_all_accounts_domain hanya untuk user ini agar cepat, 
+    #  tapi karena struktur script fungsi update itu global, kita generate manual saja linknya)
+    
+    # Refresh HTML Panel
+    refresh_account_html "$proto" "$user"
+    rebuild_web_index # Update index.html statis juga sbg backup
+    
+    api_response "success" "Akun $user berhasil dibuat." ", \"link\":\"accounts/$proto/$user.html\""
+    exit 0
+fi
+
+if [[ "$1" == "--api-delete" ]]; then
+    proto="$2"; user="$3"
+    
+    case "$proto" in
+        vmess|vless|trojan|shadowsocks) del_client_std "$proto" "$user";;
+        http|socks) del_client_acct "$proto" "$user";;
+    esac
+    restart_xray
+    ledger_del "$proto" "$user"
+    
+    # Hapus file-file
+    rm -f "$ACCOUNTS_DIR/$proto/$user-$proto.txt"
+    delete_account_html "$proto" "$user"
+    
+    # Hapus Quota
+    if [[ -f "$QUOTA_DB" ]]; then
+        grep -v "^$user|" "$QUOTA_DB" > "$QUOTA_DB.tmp" && mv "$QUOTA_DB.tmp" "$QUOTA_DB"
+    fi
+
+    api_response "success" "Akun $user berhasil dihapus."
+    exit 0
+fi
+
+if [[ "$1" == "--api-renew" ]]; then
+    proto="$2"; user="$3"; days="$4"
+    
+    if ledger_extend "$proto" "$user" "$days"; then
+        refresh_account_html "$proto" "$user"
+        api_response "success" "Akun $user diperpanjang $days hari."
+    else
+        api_response "error" "Gagal memperpanjang akun. User tidak ditemukan."
+    fi
+    exit 0
+fi
+# ======================================================================
+# END API HANDLER
+# ======================================================================
+
+
 # ====== Konfigurasi Cloudflare & Domain Tersedia ======
 CF_TOKEN="qz31v4icXAb7593V_cafEHPEvskw5V8rWES95AZx"
 AVAILABLE_DOMAINS=("vip01.qzz.io" "vip02.qzz.io" "vip03.qzz.io" "vip04.qzz.io")
@@ -2109,10 +2245,18 @@ sync_quota_to_webpanel(){
 }
 
 rebuild_web_index(){
-  local out="$WEB_PANEL_DIR/index.html"
+  # --- PERBAIKAN UNTUK PANEL INTERAKTIF ---
+  # Fungsi ini sebelumnya menimpa index.html dengan versi statis.
+  # Karena kita sekarang menggunakan Panel Interaktif (PHP + JS),
+  # kita TIDAK BOLEH menimpa file index.html utama.
+  
+  # Sebagai gantinya, kita buat file backup statis bernama 'static_list.html'
+  # jaga-jaga jika API error.
+  
+  local out="$WEB_PANEL_DIR/static_list.html" # <-- NAMA FILE DIUBAH
   mkdir -p "$WEB_PANEL_DIR/accounts"
 
-  # Data JSON untuk pencarian client-side
+  # Data JSON untuk pencarian client-side (Logic lama, tetap dipertahankan untuk static list)
   local json_data="["
   local first=1
   
@@ -2123,19 +2267,16 @@ rebuild_web_index(){
         [[ -z "$u" ]] && continue
         if [[ $first -eq 0 ]]; then json_data+=","; fi
         
-        # Hitung status sederhana
-        local q_info="Unlimited"
         local status="active"
-        
-        # Cek quota DB
-        local qline=$(grep "^$u|" "$QUOTA_DB" 2>/dev/null || true)
-        if [[ -n "$qline" ]]; then
-           local qtot=$(echo "$qline" | cut -d'|' -f2)
-           local qused=$(echo "$qline" | cut -d'|' -f3)
-           [[ -z "$qused" ]] && qused=0
-           
-           if (( qtot > 0 )); then
-             if (( qused >= qtot )); then status="inactive"; fi
+        if [[ -s "$QUOTA_DB" ]]; then
+           local qline=$(grep "^$u|" "$QUOTA_DB" 2>/dev/null || true)
+           if [[ -n "$qline" ]]; then
+               local qtot=$(echo "$qline" | cut -d'|' -f2)
+               local qused=$(echo "$qline" | cut -d'|' -f3)
+               [[ -z "$qused" ]] && qused=0
+               if (( qtot > 0 )); then
+                 if (( qused >= qtot )); then status="inactive"; fi
+               fi
            fi
         fi
         
@@ -2151,122 +2292,27 @@ rebuild_web_index(){
 <html lang="id">
 <head>
   <meta charset="UTF-8">
-  <title>Xray Panel - Daftar Akun</title>
+  <title>Xray Static List</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
-    :root {
-      --bg: #0f172a; --card-bg: rgba(30, 41, 59, 0.6); --border: rgba(148, 163, 184, 0.2);
-      --primary: #6366f1; --text: #f8fafc; --text-muted: #94a3b8;
-    }
-    * { box-sizing: border-box; font-family: 'Segoe UI', system-ui, sans-serif; }
-    body {
-      background: var(--bg); color: var(--text); padding: 20px; min-height: 100vh;
-      display: flex; flex-direction: column; align-items: center; margin: 0;
-    }
-    .header { text-align: center; margin-bottom: 30px; margin-top: 20px; }
-    .header h1 { margin: 0; font-size: 28px; background: linear-gradient(to right, #818cf8, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-    .header p { color: var(--text-muted); margin-top: 5px; }
-
-    .search-box {
-      width: 100%; max-width: 500px; margin-bottom: 30px; position: relative;
-    }
-    .search-input {
-      width: 100%; padding: 14px 20px; border-radius: 50px; border: 1px solid var(--border);
-      background: rgba(15, 23, 42, 0.8); color: white; outline: none; font-size: 16px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.2); transition: 0.3s;
-    }
-    .search-input:focus { border-color: var(--primary); box-shadow: 0 4px 25px rgba(99, 102, 241, 0.2); }
-
-    .grid {
-      display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-      gap: 16px; width: 100%; max-width: 1000px;
-    }
-    .card {
-      background: var(--card-bg); border: 1px solid var(--border); border-radius: 16px;
-      padding: 16px 20px; text-decoration: none; color: inherit; transition: 0.2s;
-      display: flex; flex-direction: column; justify-content: space-between;
-      backdrop-filter: blur(10px);
-    }
-    .card:hover { transform: translateY(-3px); background: rgba(51, 65, 85, 0.7); border-color: var(--primary); }
-    
-    .card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-    .proto-tag {
-      font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 3px 8px;
-      border-radius: 6px; background: rgba(99, 102, 241, 0.2); color: #a5b4fc;
-    }
-    .status-dot { width: 8px; height: 8px; border-radius: 50%; }
-    .active { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
-    .inactive { background: #ef4444; box-shadow: 0 0 8px #ef4444; }
-
-    .user-name { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
-    .card-btm { font-size: 12px; color: var(--text-muted); display: flex; justify-content: space-between; margin-top: 12px; }
-    
-    .empty { text-align: center; color: var(--text-muted); grid-column: 1 / -1; margin-top: 40px; display: none; }
+    body { background: #0f172a; color: white; font-family: sans-serif; padding: 20px; }
+    .card { background: #1e293b; padding: 10px; margin-bottom: 10px; border-radius: 8px; border: 1px solid #334155; display:block; text-decoration:none; color:white;}
+    .badge { background: #6366f1; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
   </style>
 </head>
 <body>
-
-<div class="header">
-  <h1>Xray Accounts</h1>
-  <p>Manajemen & Informasi Akun</p>
-</div>
-
-<div class="search-box">
-  <input type="text" id="search" class="search-input" placeholder="Cari username atau protokol..." onkeyup="filterList()">
-</div>
-
-<div class="grid" id="card-grid">
-  </div>
-<div class="empty" id="empty-msg">Tidak ada akun ditemukan.</div>
-
+<h3>Daftar Akun (Mode Statis)</h3>
+<p>Ini adalah halaman cadangan. <a href="index.html" style="color:#6366f1">Ke Panel Interaktif</a></p>
+<div id="grid"></div>
 <script>
-  const accounts = $json_data;
-
-  function render(list) {
-    const container = document.getElementById('card-grid');
-    const empty = document.getElementById('empty-msg');
-    container.innerHTML = '';
-    
-    if (list.length === 0) {
-      empty.style.display = 'block';
-      return;
-    }
-    empty.style.display = 'none';
-
-    list.forEach(acc => {
-      const statusClass = acc.status === 'active' ? 'active' : 'inactive';
-      const html = \`
-        <a href="accounts/\${acc.proto}/\${acc.user}.html" class="card">
-          <div class="card-top">
-            <span class="proto-tag">\${acc.proto}</span>
-            <div class="status-dot \${statusClass}"></div>
-          </div>
-          <div>
-            <div class="user-name">\${acc.user}</div>
-          </div>
-          <div class="card-btm">
-            <span>Exp: \${acc.exp}</span>
-            <span>Detail &rarr;</span>
-          </div>
-        </a>
-      \`;
-      container.innerHTML += html;
-    });
-  }
-
-  function filterList() {
-    const query = document.getElementById('search').value.toLowerCase();
-    const filtered = accounts.filter(acc => 
-      acc.user.toLowerCase().includes(query) || 
-      acc.proto.toLowerCase().includes(query)
-    );
-    render(filtered);
-  }
-
-  // Render awal
-  render(accounts);
+  const data = $json_data;
+  const grid = document.getElementById('grid');
+  data.forEach(acc => {
+      grid.innerHTML += \`<a href="accounts/\${acc.proto}/\${acc.user}.html" class="card">
+        <span class="badge">\${acc.proto}</span> <b>\${acc.user}</b> <small>(Exp: \${acc.exp})</small>
+      </a>\`;
+  });
 </script>
-
 </body>
 </html>
 EOF
