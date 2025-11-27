@@ -1061,28 +1061,28 @@ shadowsocks_link_nontls(){
     echo -n "ss://${ss_part}@$domain:80?path=$(rawurlencode "/$path")&host=$domain&type=ws#$name-HTTP"
 }
 
-# ====== Poin 2: Link HTTP ======
+# ====== Poin 3: Link HTTP (FIXED) ======
 http_link_tls(){
     local secret="$1" domain="$2" user="$3" path="$4"
-    # Format: https://user:pass@host.com:443?sni=host.com#http
-    echo -n "https://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:443?sni=$domain#$user-TLS"
+    # Format: https://user:pass@domain:443?sni=domain#user
+    echo -n "https://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:443?sni=$domain#$user"
 }
 http_link_nontls(){
     local secret="$1" domain="$2" user="$3" path="$4"
-    # Format: http://user:pass@host.com:80#http
-    echo -n "http://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:80#$user-HTTP"
+    # Format: http://user:pass@domain:80#user
+    echo -n "http://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:80#$user"
 }
 
-# ====== Poin 3: Link SOCKS ======
+# ====== Poin 4: Link SOCKS (FIXED) ======
 socks_link_tls(){
     local secret="$1" domain="$2" user="$3" path="$4"
-    # Format: socks5://user:pass@host.com:443?sni=host.com&tls=true#socks
-    echo -n "socks5://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:443?sni=$domain&tls=true#$user-TLS"
+    # Format: socks5://user:pass@domain:443?sni=domain&tls=true#user
+    echo -n "socks5://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:443?sni=$domain&tls=true#$user"
 }
 socks_link_nontls(){
     local secret="$1" domain="$2" user="$3" path="$4"
-    # Format: socks5://user:pass@host.com:80#socks
-    echo -n "socks5://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:80#$user-HTTP"
+    # Format: socks5://user:pass@domain:80#user
+    echo -n "socks5://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:80#$user"
 }
 
 # ====== Ledger & Header Utils ======
@@ -1848,7 +1848,6 @@ render_account_html(){
           <div class='notice-title'>Panduan Aplikasi</div>
           <p>Disarankan menggunakan aplikasi <b>Netmod Syna</b>.</p>
           <ul style='margin-left: 20px; margin-top: 5px;'>
-             <li>Pastikan Plugin diatur ke: <b>v2ray-plugin</b></li>
              <li>Pastikan Path/Mode diatur ke: <b>Websocket (WS)</b></li>
           </ul>
       </div>"

@@ -1026,11 +1026,32 @@ generate_configs() {
 }
 EOF
 
-    # --- PERBAIKAN SECURITY PANEL ---
-    print_info "Mengatur keamanan Web Panel (User: admin, Pass: admin)..."
-    # Membuat file password untuk Nginx (Default: admin / admin)
-    htpasswd -bc /etc/nginx/.htpasswd admin admin
+    print_info "Mengatur keamanan Web Panel..."
+    echo -e "  ${B_WHITE}Silakan buat Username dan Password untuk Login Web Panel:${RESET}"
+    
+    # Loop validasi input
+    while true; do
+        read -p "  Username: " PANEL_USER
+        if [[ -z "$PANEL_USER" ]]; then
+            print_error "Username tidak boleh kosong!"
+        else
+            break
+        fi
+    done
+
+    while true; do
+        read -p "  Password: " PANEL_PASS
+        if [[ -z "$PANEL_PASS" ]]; then
+            print_error "Password tidak boleh kosong!"
+        else
+            break
+        fi
+    done
+
+    # Membuat file password untuk Nginx
+    htpasswd -bc /etc/nginx/.htpasswd "$PANEL_USER" "$PANEL_PASS"
     chmod 644 /etc/nginx/.htpasswd
+    print_info "Web Panel Auth diset: User=${PANEL_USER}, Pass=${PANEL_PASS}"
 
     # Nginx Config
     print_info "Menulis konfigurasi Nginx Xray (xray.conf)..."
