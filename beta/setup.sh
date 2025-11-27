@@ -182,7 +182,7 @@ cleanup_previous_state() {
 # --- 3. Instal Dependensi ---
 install_dependencies() {
     run_task "Update repositori paket" "apt update -y"
-    run_task "Install paket (curl, jq, cron, dll)" "apt install -y curl wget socat lsof unzip git jq openssl cron"
+    run_task "Install paket (curl, jq, cron, dll)" "apt install -y curl wget socat lsof unzip git jq openssl cron apache2-utils"
 }
 
 # --- Cloudflare Handler ---
@@ -1026,6 +1026,12 @@ generate_configs() {
 }
 EOF
 
+    # --- PERBAIKAN SECURITY PANEL ---
+    print_info "Mengatur keamanan Web Panel (User: admin, Pass: admin)..."
+    # Membuat file password untuk Nginx (Default: admin / admin)
+    htpasswd -bc /etc/nginx/.htpasswd admin admin
+    chmod 644 /etc/nginx/.htpasswd
+
     # Nginx Config
     print_info "Menulis konfigurasi Nginx Xray (xray.conf)..."
     cat << EOF > /etc/nginx/conf.d/xray.conf
@@ -1096,6 +1102,10 @@ server {
         alias /usr/local/etc/xray/webpanel/;
         index index.html;
         autoindex off;
+        
+        # Mengaktifkan Password
+        auth_basic "Restricted Area: Admin Only";
+        auth_basic_user_file /etc/nginx/.htpasswd;
     }
 }
 EOF

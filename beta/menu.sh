@@ -1840,85 +1840,36 @@ render_account_html(){
     fi
   fi
 
-  # --- Generate Clash Config Snippet (Basic) ---
-  local clash_snippet=""
-  case "$proto" in
-    vmess)
-      clash_snippet="- name: ${user}-vmess
-  type: vmess
-  server: ${domain}
-  port: 443
-  uuid: ${secret}
-  alterId: 0
-  cipher: auto
-  udp: true
-  tls: true
-  skip-cert-verify: true
-  servername: ${domain}
-  network: ws
-  ws-opts:
-    path: /${path}
-    headers:
-      Host: ${domain}"
-      ;;
-    vless)
-      clash_snippet="- name: ${user}-vless
-  type: vless
-  server: ${domain}
-  port: 443
-  uuid: ${secret}
-  cipher: auto
-  udp: true
-  tls: true
-  flow: 
-  skip-cert-verify: true
-  servername: ${domain}
-  network: ws
-  ws-opts:
-    path: /${path}
-    headers:
-      Host: ${domain}"
-      ;;
-    trojan)
-      clash_snippet="- name: ${user}-trojan
-  type: trojan
-  server: ${domain}
-  port: 443
-  password: ${secret}
-  udp: true
-  sni: ${domain}
-  skip-cert-verify: true
-  network: ws
-  ws-opts:
-    path: /${path}
-    headers:
-      Host: ${domain}"
-      ;;
-    shadowsocks)
-      clash_snippet="- name: ${user}-ss
-  type: ss
-  server: ${domain}
-  port: 443
-  cipher: 2022-blake3-aes-128-gcm
-  password: \"$(get_ss_server_psk):${secret}\"
-  plugin: v2ray-plugin
-  plugin-opts:
-    mode: websocket
-    tls: true
-    skip-cert-verify: true
-    host: ${domain}
-    path: /${path}
-    mux: true"
-      ;;
-    *)
-      clash_snippet="# Clash config not supported for $proto yet."
-      ;;
-  esac
+  # --- Poin 3 & 4: Logic Pemberitahuan Aplikasi ---
+  local app_notice=""
+  if [[ "$proto" == "shadowsocks" ]]; then
+      app_notice="
+      <div class='notice-box info'>
+          <div class='notice-title'>Panduan Aplikasi</div>
+          <p>Disarankan menggunakan aplikasi <b>Netmod Syna</b>.</p>
+          <ul style='margin-left: 20px; margin-top: 5px;'>
+             <li>Pastikan Plugin diatur ke: <b>v2ray-plugin</b></li>
+             <li>Pastikan Path/Mode diatur ke: <b>Websocket (WS)</b></li>
+          </ul>
+      </div>"
+  elif [[ "$proto" == "http" || "$proto" == "socks" ]]; then
+      app_notice="
+      <div class='notice-box warn'>
+          <div class='notice-title'>Penting: Pengaturan Exclave</div>
+          <p>Protokol ini wajib menggunakan aplikasi <b>Exclave</b>.</p>
+          <p style='margin-top:5px'>Anda harus mengatur parameter berikut secara <b>MANUAL</b> di aplikasi:</p>
+          <div style='background:rgba(0,0,0,0.2); padding:8px; border-radius:6px; margin-top:5px; font-family:monospace;'>
+             Network : ws<br>
+             Path    : /${path}
+          </div>
+      </div>"
+  fi
 
   local out_dir="${WEB_PANEL_DIR}/accounts/${proto}"
   mkdir -p "$out_dir"
   local file="${out_dir}/${user}.html"
 
+  # --- Generate HTML ---
   cat > "$file" <<EOF
 <!DOCTYPE html>
 <html lang="id">
@@ -1931,7 +1882,7 @@ render_account_html(){
     :root {
       --bg: #0f172a; --card-bg: rgba(30, 41, 59, 0.7); --border: rgba(148, 163, 184, 0.2);
       --primary: #6366f1; --primary-hover: #4f46e5; --text: #f8fafc; --text-muted: #94a3b8;
-      --success: #22c55e; --danger: #ef4444;
+      --success: #22c55e; --danger: #ef4444; --warning: #f59e0b; --info: #3b82f6;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; }
     body {
@@ -1968,6 +1919,12 @@ render_account_html(){
     .info-item { background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border); }
     .info-label { font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; margin-bottom: 4px; }
     .info-val { font-size: 14px; font-weight: 500; word-break: break-all; }
+
+    /* Notice Box Styles */
+    .notice-box { padding: 16px; border-radius: 12px; margin-bottom: 24px; font-size: 13px; line-height: 1.5; border: 1px solid transparent; }
+    .notice-box.info { background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.3); color: #93c5fd; }
+    .notice-box.warn { background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.3); color: #fcd34d; }
+    .notice-title { font-weight: 700; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; font-size: 11px; }
 
     /* Quota */
     .quota-box { background: rgba(15, 23, 42, 0.4); padding: 16px; border-radius: 16px; border: 1px solid var(--border); margin-bottom: 24px; }
@@ -2026,6 +1983,9 @@ render_account_html(){
   </div>
 
   <div class="content">
+    
+    ${app_notice}
+
     <div class="info-grid">
       <div class="info-item">
         <div class="info-label">Expired</div>
@@ -2054,7 +2014,6 @@ render_account_html(){
     <div class="tabs">
       <button class="tab-btn active" onclick="switchTab('link')">Link</button>
       <button class="tab-btn" onclick="switchTab('qr')">QR Code</button>
-      <button class="tab-btn" onclick="switchTab('clash')">Clash YAML</button>
     </div>
 
     <div id="tab-link" class="tab-content active">
@@ -2077,14 +2036,6 @@ render_account_html(){
       </div>
     </div>
 
-    <div id="tab-clash" class="tab-content">
-      <div class="config-box">
-        <div class="info-label" style="margin-bottom:5px;">Proxy Provider Snippet</div>
-        <textarea id="clash-text" readonly>${clash_snippet}</textarea>
-        <button class="copy-btn" onclick="copyToClip('clash-text')">Salin</button>
-      </div>
-    </div>
-
     <div class="footer">
       Generated by AutoScript Xray<br>
       Panel: <a href="../../index.html" style="color:var(--primary);text-decoration:none;">Kembali ke Daftar Akun</a>
@@ -2095,7 +2046,6 @@ render_account_html(){
 <div id="toast" class="toast">Berhasil disalin!</div>
 
 <script>
-  // Inisialisasi QR Code
   (function() {
     var qr = new QRious({
       element: document.getElementById('qr-canvas'),
@@ -2105,7 +2055,6 @@ render_account_html(){
     });
   })();
 
-  // Fungsi Tabs
   function switchTab(tabName) {
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
@@ -2114,7 +2063,6 @@ render_account_html(){
     event.target.classList.add('active');
   }
 
-  // Fungsi Copy
   function copyToClip(elementId) {
     var copyText = document.getElementById(elementId);
     copyText.select();
@@ -2135,7 +2083,6 @@ render_account_html(){
 </html>
 EOF
 }
-
 
 # Sinkronkan info kuota di web panel dengan quota.db
 sync_quota_to_webpanel(){
