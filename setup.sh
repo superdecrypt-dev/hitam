@@ -1487,8 +1487,6 @@ main() {
     install_autoxp
     # LANGKAH CRON KUOTA
     install_quota_cron
-    # LANGKAH PHP SUDO
-    setup_sudo_for_menu
     show_summary
 
     echo -e "\n${B_GREEN}Semua langkah telah selesai!${RESET}\n"
