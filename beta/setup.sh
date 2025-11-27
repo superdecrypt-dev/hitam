@@ -717,6 +717,46 @@ generate_configs() {
     fi
     [[ -z "$PHP_FPM_SOCK" ]] && PHP_FPM_SOCK="/run/php/php-fpm.sock"
 
+    # Set Permission Web Panel
+    chown -R www-data:www-data /usr/local/etc/xray/webpanel
+    chmod -R 755 /usr/local/etc/xray/webpanel
+
+    # FIX: INPUT INTERAKTIF USERNAME & PASSWORD PANEL
+    print_header "Konfigurasi Keamanan Web Panel"
+    echo -e "${B_WHITE}Silakan buat Username dan Password untuk Login Admin Panel:${RESET}"
+    
+    # Input Username
+    while true; do
+        printf "  ${B_YELLOW}> Masukkan Username:${RESET} "
+        read PANEL_USER
+        if [[ -z "$PANEL_USER" ]]; then
+            print_error "Username tidak boleh kosong!"
+        else
+            break
+        fi
+    done
+
+    # Input Password
+    while true; do
+        printf "  ${B_YELLOW}> Masukkan Password:${RESET} "
+        read PANEL_PASS
+        if [[ -z "$PANEL_PASS" ]]; then
+            print_error "Password tidak boleh kosong!"
+        else
+            break
+        fi
+    done
+
+    print_info "Membuat file autentikasi Nginx..."
+    # -c: create new file (overwrite), -b: use batch mode (cmd line arg)
+    htpasswd -c -b /etc/nginx/.htpasswd "$PANEL_USER" "$PANEL_PASS"
+    chmod 644 /etc/nginx/.htpasswd
+    
+    print_info "Login Panel diset: User=${B_WHITE}$PANEL_USER${RESET}, Pass=${B_WHITE}$PANEL_PASS${RESET}"
+
+    # KONFIGURASI NGINX (PHP SUPPORT)
+    print_info "Menulis konfigurasi Nginx Xray (xray.conf) dengan dukungan PHP..."
+    
     # Xray Config (Disini kode config.json Xray biarkan seperti aslinya...)
     print_info "Menulis konfigurasi Xray (config.json)..."
 
@@ -1455,11 +1495,11 @@ server {
         auth_basic "Restricted Area: Admin Only";
         auth_basic_user_file /etc/nginx/.htpasswd;
 
-        # Handler PHP
-        location ~ \.php$ {
-            include fastcgi_params;
-            fastcgi_param SCRIPT_FILENAME \$request_filename;
-            fastcgi_pass unix:${PHP_SOCK};
+    # Handler PHP
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$request_filename;
+        fastcgi_pass unix:${PHP_SOCK};
         }
     }
 }
