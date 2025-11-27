@@ -1495,11 +1495,11 @@ server {
         auth_basic "Restricted Area: Admin Only";
         auth_basic_user_file /etc/nginx/.htpasswd;
 
-    # Handler PHP
-    location ~ \.php$ {
-        include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME \$request_filename;
-        fastcgi_pass unix:${PHP_SOCK};
+        # Handler PHP
+        location ~ \.php$ {
+            include fastcgi_params;
+            fastcgi_param SCRIPT_FILENAME \$request_filename;
+            fastcgi_pass unix:${PHP_SOCK};
         }
     }
 }

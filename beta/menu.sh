@@ -21,142 +21,6 @@ XRAY_API_SERVER="127.0.0.1:10000"
 WEB_PANEL_DIR="$ASSET_DIR/webpanel"
 WEB_PANEL_ACCOUNTS_DIR="$WEB_PANEL_DIR/accounts"
 
-# API MODE HANDLER (PHP BRIDGE)
-# Blok ini menangani perintah dari api.php
-# Format output: JSON
-
-api_response() {
-    local status="$1"
-    local msg="$2"
-    local extra="$3"
-    echo "{\"status\":\"$status\",\"message\":\"$msg\"${extra}}"
-}
-
-if [[ "$1" == "--api-list" ]]; then
-    # Generate JSON daftar akun
-    json_data="["
-    first=1
-    for p in vmess vless trojan shadowsocks http socks; do
-        f="$ACCOUNTS_DIR/$p.db"
-        if [[ -f "$f" ]]; then
-            while IFS='|' read -r u s e c q; do
-                [[ -z "$u" ]] && continue
-                [[ $first -eq 0 ]] && json_data+=","
-                
-                # Cek status kuota
-                local q_text="Unlimited"
-                local status="active"
-                if [[ -s "$QUOTA_DB" ]]; then
-                   local qline=$(grep "^$u|" "$QUOTA_DB" 2>/dev/null || true)
-                   if [[ -n "$qline" ]]; then
-                       local qtot=$(echo "$qline" | cut -d'|' -f2)
-                       local qused=$(echo "$qline" | cut -d'|' -f3)
-                       [[ -z "$qused" ]] && qused=0
-                       q_text="$(bytes_to_human "$qused") / $(bytes_to_human "$qtot")"
-                       if (( qtot > 0 )); then
-                           if (( qused >= qtot )); then status="inactive"; fi
-                       fi
-                   fi
-                fi
-
-                json_data+="{\"user\":\"$u\",\"proto\":\"$p\",\"exp\":\"$e\",\"created\":\"$c\",\"quota\":\"$q_text\",\"status\":\"$status\"}"
-                first=0
-            done < "$f"
-        fi
-    done
-    json_data+="]"
-    
-    echo "{\"status\":\"success\",\"data\":$json_data}"
-    exit 0
-fi
-
-if [[ "$1" == "--api-create" ]]; then
-    # Usage: --api-create [proto] [user] [days] [quota]
-    proto="$2"; user="$3"; days="$4"; quota="$5"
-    
-    if username_exists_any_proto "$user"; then
-        api_response "error" "Username $user sudah ada."
-        exit 0
-    fi
-    
-    # Setup Variable
-    domain="$(get_domain)"; path="$(get_ws_path "$proto")"
-    secret=""
-    case "$proto" in 
-        vmess|vless) secret="$(/usr/local/bin/xray uuid)";; 
-        trojan|http|socks) secret="$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16)";; 
-        shadowsocks) secret="$(openssl rand -base64 16)";; 
-    esac
-    
-    # Add Client Logic (Copied from interactive)
-    case "$proto" in
-        vmess|vless|trojan|shadowsocks) add_client_std "$proto" "$user" "$secret";;
-        http|socks) add_client_acct "$proto" "$user" "$secret";;
-    esac
-    
-    restart_xray
-    
-    created="$(date +%F)"; exp="$(date -d "+$days days" +%F)"
-    ledger_add "$proto" "$user" "$secret" "$exp" "$created" "$quota"
-    
-    # Quota Logic
-    if [[ "$quota" =~ ^[0-9]+$ ]] && (( quota > 0 )); then
-        local quota_bytes=$((quota * 1024 * 1024 * 1024))
-        # Initial Stats (simplified)
-        echo "$user|$quota_bytes|0|0|0" >> "$QUOTA_DB"
-    fi
-    
-    # Generate Files
-    # (Panggil update_all_accounts_domain hanya untuk user ini agar cepat, 
-    #  tapi karena struktur script fungsi update itu global, kita generate manual saja linknya)
-    
-    # Refresh HTML Panel
-    refresh_account_html "$proto" "$user"
-    rebuild_web_index # Update index.html statis juga sbg backup
-    
-    api_response "success" "Akun $user berhasil dibuat." ", \"link\":\"accounts/$proto/$user.html\""
-    exit 0
-fi
-
-if [[ "$1" == "--api-delete" ]]; then
-    proto="$2"; user="$3"
-    
-    case "$proto" in
-        vmess|vless|trojan|shadowsocks) del_client_std "$proto" "$user";;
-        http|socks) del_client_acct "$proto" "$user";;
-    esac
-    restart_xray
-    ledger_del "$proto" "$user"
-    
-    # Hapus file-file
-    rm -f "$ACCOUNTS_DIR/$proto/$user-$proto.txt"
-    delete_account_html "$proto" "$user"
-    
-    # Hapus Quota
-    if [[ -f "$QUOTA_DB" ]]; then
-        grep -v "^$user|" "$QUOTA_DB" > "$QUOTA_DB.tmp" && mv "$QUOTA_DB.tmp" "$QUOTA_DB"
-    fi
-
-    api_response "success" "Akun $user berhasil dihapus."
-    exit 0
-fi
-
-if [[ "$1" == "--api-renew" ]]; then
-    proto="$2"; user="$3"; days="$4"
-    
-    if ledger_extend "$proto" "$user" "$days"; then
-        refresh_account_html "$proto" "$user"
-        api_response "success" "Akun $user diperpanjang $days hari."
-    else
-        api_response "error" "Gagal memperpanjang akun. User tidak ditemukan."
-    fi
-    exit 0
-fi
-# ======================================================================
-# END API HANDLER
-# ======================================================================
-
-
 # ====== Konfigurasi Cloudflare & Domain Tersedia ======
 CF_TOKEN="qz31v4icXAb7593V_cafEHPEvskw5V8rWES95AZx"
 AVAILABLE_DOMAINS=("vip01.qzz.io" "vip02.qzz.io" "vip03.qzz.io" "vip04.qzz.io")
@@ -3260,6 +3124,141 @@ main_menu(){
     esac
   done
 }
+
+# API MODE HANDLER (PHP BRIDGE)
+# Blok ini menangani perintah dari api.php
+# Format output: JSON
+
+api_response() {
+    local status="$1"
+    local msg="$2"
+    local extra="$3"
+    echo "{\"status\":\"$status\",\"message\":\"$msg\"${extra}}"
+}
+
+if [[ "$1" == "--api-list" ]]; then
+    # Generate JSON daftar akun
+    json_data="["
+    first=1
+    for p in vmess vless trojan shadowsocks http socks; do
+        f="$ACCOUNTS_DIR/$p.db"
+        if [[ -f "$f" ]]; then
+            while IFS='|' read -r u s e c q; do
+                [[ -z "$u" ]] && continue
+                [[ $first -eq 0 ]] && json_data+=","
+                
+                # Cek status kuota
+                local q_text="Unlimited"
+                local status="active"
+                if [[ -s "$QUOTA_DB" ]]; then
+                   local qline=$(grep "^$u|" "$QUOTA_DB" 2>/dev/null || true)
+                   if [[ -n "$qline" ]]; then
+                       local qtot=$(echo "$qline" | cut -d'|' -f2)
+                       local qused=$(echo "$qline" | cut -d'|' -f3)
+                       [[ -z "$qused" ]] && qused=0
+                       q_text="$(bytes_to_human "$qused") / $(bytes_to_human "$qtot")"
+                       if (( qtot > 0 )); then
+                           if (( qused >= qtot )); then status="inactive"; fi
+                       fi
+                   fi
+                fi
+
+                json_data+="{\"user\":\"$u\",\"proto\":\"$p\",\"exp\":\"$e\",\"created\":\"$c\",\"quota\":\"$q_text\",\"status\":\"$status\"}"
+                first=0
+            done < "$f"
+        fi
+    done
+    json_data+="]"
+    
+    echo "{\"status\":\"success\",\"data\":$json_data}"
+    exit 0
+fi
+
+if [[ "$1" == "--api-create" ]]; then
+    # Usage: --api-create [proto] [user] [days] [quota]
+    proto="$2"; user="$3"; days="$4"; quota="$5"
+    
+    if username_exists_any_proto "$user"; then
+        api_response "error" "Username $user sudah ada."
+        exit 0
+    fi
+    
+    # Setup Variable
+    domain="$(get_domain)"; path="$(get_ws_path "$proto")"
+    secret=""
+    case "$proto" in 
+        vmess|vless) secret="$(/usr/local/bin/xray uuid)";; 
+        trojan|http|socks) secret="$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16)";; 
+        shadowsocks) secret="$(openssl rand -base64 16)";; 
+    esac
+    
+    # Add Client Logic (Copied from interactive)
+    case "$proto" in
+        vmess|vless|trojan|shadowsocks) add_client_std "$proto" "$user" "$secret";;
+        http|socks) add_client_acct "$proto" "$user" "$secret";;
+    esac
+    
+    restart_xray
+    
+    created="$(date +%F)"; exp="$(date -d "+$days days" +%F)"
+    ledger_add "$proto" "$user" "$secret" "$exp" "$created" "$quota"
+    
+    # Quota Logic
+    if [[ "$quota" =~ ^[0-9]+$ ]] && (( quota > 0 )); then
+        local quota_bytes=$((quota * 1024 * 1024 * 1024))
+        # Initial Stats (simplified)
+        echo "$user|$quota_bytes|0|0|0" >> "$QUOTA_DB"
+    fi
+    
+    # Generate Files
+    # (Panggil update_all_accounts_domain hanya untuk user ini agar cepat, 
+    #  tapi karena struktur script fungsi update itu global, kita generate manual saja linknya)
+    
+    # Refresh HTML Panel
+    refresh_account_html "$proto" "$user"
+    rebuild_web_index # Update index.html statis juga sbg backup
+    
+    api_response "success" "Akun $user berhasil dibuat." ", \"link\":\"accounts/$proto/$user.html\""
+    exit 0
+fi
+
+if [[ "$1" == "--api-delete" ]]; then
+    proto="$2"; user="$3"
+    
+    case "$proto" in
+        vmess|vless|trojan|shadowsocks) del_client_std "$proto" "$user";;
+        http|socks) del_client_acct "$proto" "$user";;
+    esac
+    restart_xray
+    ledger_del "$proto" "$user"
+    
+    # Hapus file-file
+    rm -f "$ACCOUNTS_DIR/$proto/$user-$proto.txt"
+    delete_account_html "$proto" "$user"
+    
+    # Hapus Quota
+    if [[ -f "$QUOTA_DB" ]]; then
+        grep -v "^$user|" "$QUOTA_DB" > "$QUOTA_DB.tmp" && mv "$QUOTA_DB.tmp" "$QUOTA_DB"
+    fi
+
+    api_response "success" "Akun $user berhasil dihapus."
+    exit 0
+fi
+
+if [[ "$1" == "--api-renew" ]]; then
+    proto="$2"; user="$3"; days="$4"
+    
+    if ledger_extend "$proto" "$user" "$days"; then
+        refresh_account_html "$proto" "$user"
+        api_response "success" "Akun $user diperpanjang $days hari."
+    else
+        api_response "error" "Gagal memperpanjang akun. User tidak ditemukan."
+    fi
+    exit 0
+fi
+# ======================================================================
+# END API HANDLER
+# ======================================================================
 
 # ====== Bootstrap ======
 need_root
