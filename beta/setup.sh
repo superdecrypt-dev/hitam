@@ -717,8 +717,13 @@ generate_configs() {
     fi
     [[ -z "$PHP_FPM_SOCK" ]] && PHP_FPM_SOCK="/run/php/php-fpm.sock"
 
-    # Xray Config
+    # Xray Config (Disini kode config.json Xray biarkan seperti aslinya...)
     print_info "Menulis konfigurasi Xray (config.json)..."
+    # ... [PASTE KODE CONFIG.JSON ASLI DI SINI] ...
+    # (Agar jawaban tidak terlalu panjang, bagian cat << EOF > config.json saya skip, 
+    #  pastikan Anda tetap menyertakan bagian pembuatan config.json seperti script asli)
+    
+    # --- MULAI BAGIAN YG DISKIP (Salin dari script lama Anda) ---
     cat << EOF > /usr/local/etc/xray/config.json
 {
   "api": {
@@ -1025,6 +1030,63 @@ generate_configs() {
   "stats": {}
 }
 EOF
+    # --- SELESAI BAGIAN YG DISKIP ---
+
+    # ========================================================
+    # FIX 403: INISIALISASI WEB PANEL DENGAN INDEX KOSONG
+    # ========================================================
+    print_info "Menginisialisasi direktori Web Panel agar siap diakses..."
+    
+    # Buat direktori
+    mkdir -p /usr/local/etc/xray/webpanel/accounts
+    
+    # Buat file index.html default (Empty State)
+    # Ini mencegah error 403 Forbidden saat pertama kali akses
+    cat << 'HTML' > /usr/local/etc/xray/webpanel/index.html
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Xray Panel - Daftar Akun</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      --bg: #0f172a; --card-bg: rgba(30, 41, 59, 0.6); --border: rgba(148, 163, 184, 0.2);
+      --primary: #6366f1; --text: #f8fafc; --text-muted: #94a3b8;
+    }
+    * { box-sizing: border-box; font-family: 'Segoe UI', system-ui, sans-serif; }
+    body {
+      background: var(--bg); color: var(--text); padding: 20px; min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center; margin: 0;
+    }
+    .header { text-align: center; margin-bottom: 30px; margin-top: 20px; }
+    .header h1 { margin: 0; font-size: 28px; background: linear-gradient(to right, #818cf8, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .header p { color: var(--text-muted); margin-top: 5px; }
+    .empty { 
+        text-align: center; color: var(--text-muted); margin-top: 40px; 
+        background: var(--card-bg); padding: 20px; border-radius: 16px; border: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+<div class="header">
+  <h1>Xray Accounts</h1>
+  <p>Manajemen & Informasi Akun</p>
+</div>
+<div class="empty">
+  <h3>Belum ada akun yang dibuat.</h3>
+  <p>Silakan gunakan perintah <b>menu</b> di terminal VPS untuk membuat akun baru.</p>
+</div>
+</body>
+</html>
+HTML
+
+    # Set Permission agar Nginx bisa baca
+    chmod -R 755 /usr/local/etc/xray/webpanel
+    
+    # ========================================================
+    # END FIX 403
+    # ========================================================
 
     print_info "Mengatur keamanan Web Panel..."
     echo -e "  ${B_WHITE}Silakan buat Username dan Password untuk Login Web Panel:${RESET}"
@@ -1132,6 +1194,7 @@ server {
 EOF
     print_info "Semua file konfigurasi berhasil ditulis."
 }
+
 
 # --- 11. Start Services ---
 start_services() {
