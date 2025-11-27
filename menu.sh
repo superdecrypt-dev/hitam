@@ -874,24 +874,37 @@ get_ss_server_psk() {
 }
 
 restart_xray(){
-  # Restart Nginx, Xray, dan Wireproxy setiap ada perubahan penting
-  if ! run_task "Me-restart layanan Nginx" "systemctl restart nginx"; then
-      print_warn "Layanan Nginx gagal restart. Cek status."
+  # Restart / reload Nginx, lalu Xray dan Wireproxy
+  # Dikasih timeout supaya menu nggak nyangkut kalau service bermasalah
+
+  # --- NGINX ---
+  if command -v nginx >/dev/null 2>&1; then
+      # Coba reload dulu (lebih ringan).
+      # Kalau reload gagal, baru coba restart.
+      if ! run_task "Me-reload layanan Nginx (maks 15 detik)" "timeout 15 systemctl reload nginx"; then
+          print_warn "Reload Nginx gagal, mencoba restart..."
+          if ! run_task "Me-restart layanan Nginx (maks 20 detik)" "timeout 20 systemctl restart nginx"; then
+              print_warn "Layanan Nginx gagal restart atau timeout. Cek status dengan: systemctl status nginx"
+          fi
+      fi
+  else
+      print_warn "Nginx tidak ditemukan, lewati restart Nginx."
   fi
 
+  # --- XRAY ---
   if ! run_task "Me-restart layanan Xray" "systemctl restart xray"; then
-      print_warn "Layanan Xray gagal restart. Cek status."
+      print_warn "Layanan Xray gagal restart. Cek status dengan: systemctl status xray"
   fi
 
-  # Wireproxy opsional: kalau belum terpasang, abaikan error-nya
-  if ! run_task "Me-restart layanan Wireproxy" "systemctl restart wireproxy"; then
-      print_warn "Layanan Wireproxy gagal restart (abaikan jika belum terpasang)."
+  # --- WIREPROXY (opsional) ---
+  if systemctl list-unit-files 2>/dev/null | grep -q '^wireproxy\.service'; then
+      if ! run_task "Me-restart layanan Wireproxy" "systemctl restart wireproxy"; then
+          print_warn "Layanan Wireproxy gagal restart (abaikan jika belum terpasang)."
+      fi
   fi
 
-  # Kasih jeda sedikit biar semua service stabil
   sleep 0.5
 }
-
 
 # ====== Operasi JSON klien (UPDATED) ======
 add_client_std(){ # vmess, vless, trojan, shadowsocks
@@ -1048,28 +1061,28 @@ shadowsocks_link_nontls(){
     echo -n "ss://${ss_part}@$domain:80?path=$(rawurlencode "/$path")&host=$domain&type=ws#$name-HTTP"
 }
 
-# ====== Poin 2: Link HTTP ======
+# ====== Poin 3: Link HTTP (FIXED) ======
 http_link_tls(){
     local secret="$1" domain="$2" user="$3" path="$4"
-    # Format: https://user:pass@host.com:443?sni=host.com#http
-    echo -n "https://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:443?sni=$domain#$user-TLS"
+    # Format: https://user:pass@domain:443?sni=domain#user
+    echo -n "https://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:443?sni=$domain#$user"
 }
 http_link_nontls(){
     local secret="$1" domain="$2" user="$3" path="$4"
-    # Format: http://user:pass@host.com:80#http
-    echo -n "http://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:80#$user-HTTP"
+    # Format: http://user:pass@domain:80#user
+    echo -n "http://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:80#$user"
 }
 
-# ====== Poin 3: Link SOCKS ======
+# ====== Poin 4: Link SOCKS (FIXED) ======
 socks_link_tls(){
     local secret="$1" domain="$2" user="$3" path="$4"
-    # Format: socks5://user:pass@host.com:443?sni=host.com&tls=true#socks
-    echo -n "socks5://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:443?sni=$domain&tls=true#$user-TLS"
+    # Format: socks5://user:pass@domain:443?sni=domain&tls=true#user
+    echo -n "socks5://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:443?sni=$domain&tls=true#$user"
 }
 socks_link_nontls(){
     local secret="$1" domain="$2" user="$3" path="$4"
-    # Format: socks5://user:pass@host.com:80#socks
-    echo -n "socks5://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:80#$user-HTTP"
+    # Format: socks5://user:pass@domain:80#user
+    echo -n "socks5://$(rawurlencode "$user"):$(rawurlencode "$secret")@$domain:80#$user"
 }
 
 # ====== Ledger & Header Utils ======
@@ -1783,317 +1796,288 @@ aksi_daftar_akun(){
   pause_for_enter
 }
 
-render_account_html() {
+render_account_html(){
   local proto="$1"
   local user="$2"
   local domain="$3"
-  local path="$4"        # tanpa slash depan, mis: vmess-ws
+  local path="$4"
   local secret="$5"
   local exp="$6"
   local created="$7"
   local link_tls="$8"
   local link_nontls="$9"
 
-# Info kuota + status aktif/nonaktif
-  local quota_info="Unlimited"
+  # --- Hitung Kuota ---
+  local quota_total_bytes=0
+  local quota_used_bytes=0
+  local quota_text="Unlimited"
+  local quota_percent=0
   local status_label="AKTIF"
-  local status_class="status-on"
+  local status_class="status-active"
 
   if [[ -s "$QUOTA_DB" ]]; then
     local line
     line=$(grep "^$user|" "$QUOTA_DB" 2>/dev/null | head -n1 || true)
     if [[ -n "$line" ]]; then
-      local q used
-      q=$(echo "$line" | cut -d'|' -f2)
-      used=$(echo "$line" | cut -d'|' -f3)
-      [[ -z "$used" ]] && used=0
+      quota_total_bytes=$(echo "$line" | cut -d'|' -f2)
+      quota_used_bytes=$(echo "$line"  | cut -d'|' -f3)
+      [[ -z "$quota_used_bytes" ]] && quota_used_bytes=0
 
-      if (( q > 0 )); then
-        # Kuota terbatas: tampilkan "terpakai / total"
-        quota_info="$(bytes_to_human "$used") / $(bytes_to_human "$q")"
-        if (( used >= q )); then
-          status_label="NONAKTIF"
-          status_class="status-off"
-        else
-          status_label="AKTIF"
-          status_class="status-on"
+      local human_total human_used
+      human_total=$(bytes_to_human "$quota_total_bytes")
+      human_used=$(bytes_to_human "$quota_used_bytes")
+      quota_text="${human_used} / ${human_total}"
+
+      if (( quota_total_bytes > 0 )); then
+        quota_percent=$(( quota_used_bytes * 100 / quota_total_bytes ))
+        (( quota_percent > 100 )) && quota_percent=100
+
+        if (( quota_used_bytes >= quota_total_bytes )); then
+          status_label="HABIS KUOTA"
+          status_class="status-inactive"
         fi
-      else
-        # q == 0 → unlimited
-        quota_info="Unlimited"
-        status_label="AKTIF"
-        status_class="status-on"
       fi
     fi
   fi
 
-  local extra_note=""
-    case "$proto" in
-      shadowsocks)
-        extra_note="<div class=\"footer-note\">Rekomendasi: gunakan aplikasi <strong>Netmod / Netmod Syna</strong> untuk koneksi <strong>Shadowsocks WS 2022</strong>.</div>"
-        ;;
-      http|socks)
-        extra_note="<div class=\"footer-note\">Gunakan aplikasi <strong>Exclave</strong>. Atur network ke <strong>WebSocket</strong> dan isi <strong>Path Websocket</strong> manual: <code>/$path</code>.</div>"
-        ;;
-    esac
+  # --- Poin 3 & 4: Logic Pemberitahuan Aplikasi ---
+  local app_notice=""
+  if [[ "$proto" == "shadowsocks" ]]; then
+      app_notice="
+      <div class='notice-box info'>
+          <div class='notice-title'>Panduan Aplikasi</div>
+          <p>Disarankan menggunakan aplikasi <b>Netmod Syna</b>.</p>
+          <ul style='margin-left: 20px; margin-top: 5px;'>
+             <li>Pastikan Path/Mode diatur ke: <b>Websocket (WS)</b></li>
+          </ul>
+      </div>"
+  elif [[ "$proto" == "http" || "$proto" == "socks" ]]; then
+      app_notice="
+      <div class='notice-box warn'>
+          <div class='notice-title'>Penting: Pengaturan Exclave</div>
+          <p>Protokol ini wajib menggunakan aplikasi <b>Exclave</b>.</p>
+          <p style='margin-top:5px'>Anda harus mengatur parameter berikut secara <b>MANUAL</b> di aplikasi:</p>
+          <div style='background:rgba(0,0,0,0.2); padding:8px; border-radius:6px; margin-top:5px; font-family:monospace;'>
+             Network : ws<br>
+             Path    : /${path}
+          </div>
+      </div>"
+  fi
 
-  local out="$WEB_PANEL_ACCOUNTS_DIR/$proto/$user.html"
+  local out_dir="${WEB_PANEL_DIR}/accounts/${proto}"
+  mkdir -p "$out_dir"
+  local file="${out_dir}/${user}.html"
 
-  cat > "$out" <<EOF
-<!doctype html>
-<html lang="en">
+  # --- Generate HTML ---
+  cat > "$file" <<EOF
+<!DOCTYPE html>
+<html lang="id">
 <head>
-  <meta charset="utf-8">
-  <title>Account $user – ${proto^^}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="UTF-8">
+  <title>Akun ${proto^^} - ${user}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
   <style>
     :root {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #0f172a;
-      color: #e5e7eb;
+      --bg: #0f172a; --card-bg: rgba(30, 41, 59, 0.7); --border: rgba(148, 163, 184, 0.2);
+      --primary: #6366f1; --primary-hover: #4f46e5; --text: #f8fafc; --text-muted: #94a3b8;
+      --success: #22c55e; --danger: #ef4444; --warning: #f59e0b; --info: #3b82f6;
     }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; }
     body {
-      margin: 0;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
+      background: radial-gradient(circle at top, #1e293b, var(--bg));
+      color: var(--text); min-height: 100vh; display: flex; justify-content: center; padding: 20px;
     }
-    .card {
-      max-width: 720px;
-      width: 100%;
-      background: rgba(15,23,42,0.9);
-      border-radius: 16px;
-      padding: 24px 24px 20px;
-      box-shadow: 0 20px 40px rgba(0,0,0,0.6);
-      border: 1px solid rgba(148,163,184,0.4);
-      backdrop-filter: blur(16px);
+    .container {
+      width: 100%; max-width: 600px; background: var(--card-bg);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      border: 1px solid var(--border); border-radius: 24px; overflow: hidden;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
     }
-    .proto-pill {
-      display:inline-flex;
-      align-items:center;
-      gap:8px;
-      padding:4px 10px;
-      border-radius:999px;
-      background:rgba(59,130,246,0.1);
-      border:1px solid rgba(59,130,246,0.5);
-      font-size:12px;
-      letter-spacing:0.06em;
-      text-transform:uppercase;
-      color:#93c5fd;
+    .header {
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(168, 85, 247, 0.1));
+      padding: 30px 24px; border-bottom: 1px solid var(--border); text-align: center;
     }
-    .header-row {
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      gap:10px;
-      flex-wrap:wrap;
+    .proto-badge {
+      background: var(--primary); color: white; padding: 4px 12px; border-radius: 20px;
+      font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
     }
-    .status-pill {
-      display:inline-flex;
-      align-items:center;
-      gap:6px;
-      padding:2px 10px;
-      border-radius:999px;
-      font-size:11px;
-      text-transform:uppercase;
-      letter-spacing:0.08em;
+    .username { font-size: 24px; font-weight: 700; margin: 10px 0 5px; }
+    .domain { color: var(--text-muted); font-size: 14px; }
+    
+    .status-badge {
+      display: inline-flex; align-items: center; gap: 6px; padding: 6px 16px;
+      border-radius: 20px; font-size: 13px; font-weight: 600; margin-top: 15px;
     }
-    .status-on {
-      background:rgba(34,197,94,0.15);
-      border:1px solid rgba(34,197,94,0.7);
-      color:#bbf7d0;
+    .status-active { background: rgba(34, 197, 94, 0.15); color: var(--success); border: 1px solid rgba(34, 197, 94, 0.3); }
+    .status-inactive { background: rgba(239, 68, 68, 0.15); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+
+    .content { padding: 24px; }
+    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+    .info-item { background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border); }
+    .info-label { font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; margin-bottom: 4px; }
+    .info-val { font-size: 14px; font-weight: 500; word-break: break-all; }
+
+    /* Notice Box Styles */
+    .notice-box { padding: 16px; border-radius: 12px; margin-bottom: 24px; font-size: 13px; line-height: 1.5; border: 1px solid transparent; }
+    .notice-box.info { background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.3); color: #93c5fd; }
+    .notice-box.warn { background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.3); color: #fcd34d; }
+    .notice-title { font-weight: 700; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; font-size: 11px; }
+
+    /* Quota */
+    .quota-box { background: rgba(15, 23, 42, 0.4); padding: 16px; border-radius: 16px; border: 1px solid var(--border); margin-bottom: 24px; }
+    .quota-header { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; }
+    .progress-bar { width: 100%; height: 8px; background: #334155; border-radius: 4px; overflow: hidden; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, var(--success), #eab308); transition: width 0.5s ease; }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 8px; margin-bottom: 16px; background: rgba(15, 23, 42, 0.4); padding: 6px; border-radius: 12px; }
+    .tab-btn {
+      flex: 1; padding: 10px; border: none; background: transparent; color: var(--text-muted);
+      cursor: pointer; border-radius: 8px; font-weight: 600; transition: all 0.2s;
     }
-    .status-off {
-      background:rgba(248,113,113,0.15);
-      border:1px solid rgba(248,113,113,0.7);
-      color:#fecaca;
+    .tab-btn.active { background: var(--primary); color: white; shadow: 0 4px 12px rgba(99, 102, 241, 0.3); }
+    
+    .tab-content { display: none; animation: fadeIn 0.3s ease; }
+    .tab-content.active { display: block; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* Config Box */
+    .config-box { position: relative; margin-bottom: 16px; }
+    textarea {
+      width: 100%; background: #020617; color: #cbd5e1; border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px; font-family: monospace; font-size: 12px; resize: none;
+      height: 120px; outline: none;
     }
-    .footer-note {
-      margin-top:10px;
-      font-size:11px;
-      color:#e5e7eb;
-      background:#111827;
-      border-radius:10px;
-      padding:8px 10px;
-      border:1px dashed rgba(148,163,184,0.7);
+    .copy-btn {
+      position: absolute; top: 8px; right: 8px; background: var(--primary); color: white;
+      border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer;
+      opacity: 0.9; transition: 0.2s;
     }
-    .footer-note code {
-      font-size:11px;
+    .copy-btn:hover { opacity: 1; transform: scale(1.05); }
+
+    /* QR */
+    .qr-container { text-align: center; padding: 20px; background: white; border-radius: 16px; margin-top: 10px; width: fit-content; margin: 0 auto; }
+    
+    .footer { text-align: center; margin-top: 30px; font-size: 12px; color: var(--text-muted); }
+    .toast {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%) translateY(100px);
+      background: #0f172a; color: white; padding: 10px 24px; border-radius: 50px;
+      border: 1px solid var(--primary); opacity: 0; transition: 0.3s; pointer-events: none; z-index: 100;
     }
-    h1 {
-      margin: 12px 0 4px;
-      font-size: 22px;
-    }
-    .meta {
-      font-size: 13px;
-      color: #9ca3af;
-      display:flex;
-      flex-wrap:wrap;
-      gap:10px 18px;
-    }
-    .meta span {
-      display:flex;
-      align-items:center;
-      gap:6px;
-    }
-    .label {
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: #9ca3af;
-      margin-top: 18px;
-      margin-bottom: 4px;
-    }
-    .value-box {
-      background:#020617;
-      border-radius:10px;
-      padding:10px 12px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      font-size: 13px;
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      gap:8px;
-      border:1px solid rgba(31,41,55,0.9);
-    }
-    code {
-      word-break: break-all;
-    }
-    button.copy {
-      border:none;
-      border-radius:999px;
-      padding:6px 10px;
-      font-size:11px;
-      text-transform:uppercase;
-      letter-spacing:0.08em;
-      background:#22c55e;
-      color:#022c22;
-      cursor:pointer;
-    }
-    button.copy:hover {
-      filter:brightness(1.05);
-    }
-    .links {
-      display:flex;
-      flex-direction:column;
-      gap:10px;
-      margin-top:8px;
-    }
-    a.conn-link {
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      gap:8px;
-      text-decoration:none;
-      background:#020617;
-      border-radius:10px;
-      padding:10px 12px;
-      border:1px solid rgba(31,41,55,0.9);
-      color:#e5e7eb;
-      font-size:13px;
-    }
-    .conn-link span.small {
-      font-size:11px;
-      text-transform:uppercase;
-      letter-spacing:0.08em;
-      color:#9ca3af;
-    }
-    .badge {
-      font-size:11px;
-      padding:3px 8px;
-      border-radius:999px;
-      border:1px solid rgba(148,163,184,0.5);
-      color:#e5e7eb;
-    }
-    .footer {
-      margin-top:16px;
-      font-size:11px;
-      color:#6b7280;
-      display:flex;
-      justify-content:space-between;
-      gap:8px;
-      flex-wrap:wrap;
-    }
+    .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="header-row">
-      <div class="proto-pill">
-        <span>${proto^^}</span>
-        <span style="opacity:.7;">WS</span>
-      </div>
-      <span class="status-pill $status_class">$status_label</span>
-    </div>
-    <h1>$user@$domain</h1>
-    <div class="meta">
-      <span>📅 Created: $created</span>
-      <span>⏰ Expired: $exp</span>
-      <span>📦 Kuota: $quota_info</span>
-      <span>🛣️ Path: /$path</span>
-    </div>
 
-    <div class="label">Credential Utama</div>
-    <div class="value-box">
-      <code>$secret</code>
-      <button class="copy" data-copy="$secret">Copy</button>
-    </div>
-
-    <div class="label">Link Koneksi</div>
-    <div class="links">
-      <a class="conn-link" href="$link_tls">
-        <div>
-          <div><strong>TLS 443</strong></div>
-          <div class="small">WebSocket + TLS</div>
-        </div>
-        <span class="badge">COPY</span>
-      </a>
-      <a class="conn-link" href="$link_nontls">
-        <div>
-          <div><strong>Non-TLS 80</strong></div>
-          <div class="small">WS HTTP biasa</div>
-        </div>
-        <span class="badge">COPY</span>
-      </a>
-    </div>
-$extra_note
-    <div class="footer">
-      <span>Generated by Xray Menu</span>
-      <span>Share link ini ke user ⮕</span>
+<div class="container">
+  <div class="header">
+    <span class="proto-badge">${proto^^}</span>
+    <h1 class="username">${user}</h1>
+    <div class="domain">${domain}</div>
+    <div class="status-badge ${status_class}">
+      <span class="dot"></span> ${status_label}
     </div>
   </div>
 
-<script>
-document.querySelectorAll('button.copy').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const text = btn.getAttribute('data-copy');
-    navigator.clipboard.writeText(text).then(() => {
-      const old = btn.textContent;
-      btn.textContent = 'Copied';
-      setTimeout(() => btn.textContent = old, 1200);
-    });
-  });
-});
+  <div class="content">
+    
+    ${app_notice}
 
-// Copy link TLS / Non-TLS ke clipboard saat kartu di-klik
-document.querySelectorAll('.conn-link').forEach(a => {
-  a.addEventListener('click', (e) => {
-    e.preventDefault(); // jangan buka link di browser
-    const text = a.getAttribute('data-copy') || a.getAttribute('href');
-    if (!text) return;
-    navigator.clipboard.writeText(text).then(() => {
-      const badge = a.querySelector('.badge');
-      if (badge) {
-        const old = badge.textContent;
-        badge.textContent = 'Copied';
-        setTimeout(() => badge.textContent = old, 1200);
-      }
+    <div class="info-grid">
+      <div class="info-item">
+        <div class="info-label">Expired</div>
+        <div class="info-val">${exp}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Path</div>
+        <div class="info-val">/${path}</div>
+      </div>
+      <div class="info-item" style="grid-column: span 2;">
+        <div class="info-label">Secret / UUID</div>
+        <div class="info-val" style="font-family: monospace;">${secret}</div>
+      </div>
+    </div>
+
+    <div class="quota-box">
+      <div class="quota-header">
+        <span style="color: var(--text-muted);">Penggunaan Kuota</span>
+        <strong>${quota_text}</strong>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill" style="width: ${quota_percent}%"></div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('link')">Link</button>
+      <button class="tab-btn" onclick="switchTab('qr')">QR Code</button>
+    </div>
+
+    <div id="tab-link" class="tab-content active">
+      <div class="config-box">
+        <div class="info-label" style="margin-bottom:5px;">TLS (Port 443) - Rekomendasi</div>
+        <textarea id="tls-text" readonly>${link_tls}</textarea>
+        <button class="copy-btn" onclick="copyToClip('tls-text')">Salin</button>
+      </div>
+      <div class="config-box">
+        <div class="info-label" style="margin-bottom:5px;">Non-TLS (Port 80)</div>
+        <textarea id="nontls-text" readonly>${link_nontls}</textarea>
+        <button class="copy-btn" style="background:#475569;" onclick="copyToClip('nontls-text')">Salin</button>
+      </div>
+    </div>
+
+    <div id="tab-qr" class="tab-content" style="text-align: center;">
+      <div class="info-label">Scan untuk TLS (Port 443)</div>
+      <div class="qr-container">
+        <canvas id="qr-canvas"></canvas>
+      </div>
+    </div>
+
+    <div class="footer">
+      Generated by AutoScript Xray<br>
+      Panel: <a href="../../index.html" style="color:var(--primary);text-decoration:none;">Kembali ke Daftar Akun</a>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast">Berhasil disalin!</div>
+
+<script>
+  (function() {
+    var qr = new QRious({
+      element: document.getElementById('qr-canvas'),
+      value: document.getElementById('tls-text').value,
+      size: 200,
+      level: 'M'
     });
-  });
-});
+  })();
+
+  function switchTab(tabName) {
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+    
+    document.getElementById('tab-' + tabName).classList.add('active');
+    event.target.classList.add('active');
+  }
+
+  function copyToClip(elementId) {
+    var copyText = document.getElementById(elementId);
+    copyText.select();
+    copyText.setSelectionRange(0, 99999);
+    navigator.clipboard.writeText(copyText.value).then(() => {
+      showToast();
+    });
+  }
+
+  function showToast() {
+    var x = document.getElementById("toast");
+    x.classList.add("show");
+    setTimeout(function(){ x.classList.remove("show"); }, 2000);
+  }
 </script>
+
 </body>
 </html>
 EOF
@@ -2124,93 +2108,165 @@ sync_quota_to_webpanel(){
   done < "$QUOTA_DB"
 }
 
-rebuild_web_index() {
+rebuild_web_index(){
   local out="$WEB_PANEL_DIR/index.html"
+  mkdir -p "$WEB_PANEL_DIR/accounts"
+
+  # Data JSON untuk pencarian client-side
+  local json_data="["
+  local first=1
+  
+  for p in vmess vless trojan shadowsocks http socks; do
+    local f="$ACCOUNTS_DIR/$p.db"
+    if [[ -f "$f" ]]; then
+      while IFS='|' read -r u s e c q; do
+        [[ -z "$u" ]] && continue
+        if [[ $first -eq 0 ]]; then json_data+=","; fi
+        
+        # Hitung status sederhana
+        local q_info="Unlimited"
+        local status="active"
+        
+        # Cek quota DB
+        local qline=$(grep "^$u|" "$QUOTA_DB" 2>/dev/null || true)
+        if [[ -n "$qline" ]]; then
+           local qtot=$(echo "$qline" | cut -d'|' -f2)
+           local qused=$(echo "$qline" | cut -d'|' -f3)
+           [[ -z "$qused" ]] && qused=0
+           
+           if (( qtot > 0 )); then
+             if (( qused >= qtot )); then status="inactive"; fi
+           fi
+        fi
+        
+        json_data+="{\"user\":\"$u\",\"proto\":\"$p\",\"exp\":\"$e\",\"status\":\"$status\"}"
+        first=0
+      done < "$f"
+    fi
+  done
+  json_data+="]"
 
   cat > "$out" <<EOF
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html lang="id">
 <head>
-  <meta charset="utf-8">
-  <title>Xray Accounts Panel</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="UTF-8">
+  <title>Xray Panel - Daftar Akun</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
-    :root { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#020617; color:#e5e7eb; }
-    body { margin:0; padding:24px; min-height:100vh; }
-    h1 { margin:0 0 4px; font-size:24px; }
-    .sub { color:#9ca3af; font-size:13px; margin-bottom:16px; }
-    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; margin-top:16px; }
+    :root {
+      --bg: #0f172a; --card-bg: rgba(30, 41, 59, 0.6); --border: rgba(148, 163, 184, 0.2);
+      --primary: #6366f1; --text: #f8fafc; --text-muted: #94a3b8;
+    }
+    * { box-sizing: border-box; font-family: 'Segoe UI', system-ui, sans-serif; }
+    body {
+      background: var(--bg); color: var(--text); padding: 20px; min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center; margin: 0;
+    }
+    .header { text-align: center; margin-bottom: 30px; margin-top: 20px; }
+    .header h1 { margin: 0; font-size: 28px; background: linear-gradient(to right, #818cf8, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .header p { color: var(--text-muted); margin-top: 5px; }
+
+    .search-box {
+      width: 100%; max-width: 500px; margin-bottom: 30px; position: relative;
+    }
+    .search-input {
+      width: 100%; padding: 14px 20px; border-radius: 50px; border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.8); color: white; outline: none; font-size: 16px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.2); transition: 0.3s;
+    }
+    .search-input:focus { border-color: var(--primary); box-shadow: 0 4px 25px rgba(99, 102, 241, 0.2); }
+
+    .grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 16px; width: 100%; max-width: 1000px;
+    }
     .card {
-      border-radius:14px;
-      padding:12px 12px 10px;
-      background:rgba(15,23,42,0.96);
-      border:1px solid rgba(51,65,85,0.9);
-      text-decoration:none;
-      color:inherit;
-      display:block;
+      background: var(--card-bg); border: 1px solid var(--border); border-radius: 16px;
+      padding: 16px 20px; text-decoration: none; color: inherit; transition: 0.2s;
+      display: flex; flex-direction: column; justify-content: space-between;
+      backdrop-filter: blur(10px);
     }
-    .tag { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:#93c5fd; }
-    .user { font-weight:600; margin:4px 0 2px; font-size:15px; }
-    .domain { font-size:12px; color:#9ca3af; }
-    .meta { font-size:11px; color:#9ca3af; display:flex; justify-content:space-between; margin-top:6px; }
-    .search-box { margin-top:8px; }
-    input[type="search"] {
-      width:100%; max-width:320px; padding:6px 10px; border-radius:999px;
-      border:1px solid rgba(75,85,99,0.9); background:#020617; color:#e5e7eb;
+    .card:hover { transform: translateY(-3px); background: rgba(51, 65, 85, 0.7); border-color: var(--primary); }
+    
+    .card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .proto-tag {
+      font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 3px 8px;
+      border-radius: 6px; background: rgba(99, 102, 241, 0.2); color: #a5b4fc;
     }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .active { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+    .inactive { background: #ef4444; box-shadow: 0 0 8px #ef4444; }
+
+    .user-name { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+    .card-btm { font-size: 12px; color: var(--text-muted); display: flex; justify-content: space-between; margin-top: 12px; }
+    
+    .empty { text-align: center; color: var(--text-muted); grid-column: 1 / -1; margin-top: 40px; display: none; }
   </style>
 </head>
 <body>
+
+<div class="header">
   <h1>Xray Accounts</h1>
-  <div class="sub">Klik salah satu kartu untuk melihat detail akun.</div>
-  <div class="search-box">
-    <input id="search" type="search" placeholder="Cari username atau proto...">
+  <p>Manajemen & Informasi Akun</p>
+</div>
+
+<div class="search-box">
+  <input type="text" id="search" class="search-input" placeholder="Cari username atau protokol..." onkeyup="filterList()">
+</div>
+
+<div class="grid" id="card-grid">
   </div>
-  <div class="grid" id="grid">
-EOF
-
-  # Loop semua DB & isi kartu
-  local domain
-  domain="$(get_domain)"
-
-  # ⬅️ tambahkan deklarasi lokal di sini
-  local proto u s e c q
-
-  for proto in vmess vless trojan shadowsocks http socks; do
-    local db="$ACCOUNTS_DIR/$proto.db"
-    [[ ! -f "$db" ]] && continue
-
-    while IFS='|' read -r u s e c q; do
-      [[ -z "$u" ]] && continue
-      [[ -z "$c" ]] && c="-"
-      cat >> "$out" <<EOF
-    <a class="card" href="accounts/${proto}/${u}.html" data-user="${u}" data-proto="${proto}" data-exp="${e}">
-      <div class="tag">${proto^^}</div>
-      <div class="user">${u}</div>
-      <div class="domain">${u}@${domain}</div>
-      <div class="meta">
-        <span>Exp: ${e}</span>
-        <span>Created: ${c}</span>
-      </div>
-    </a>
-EOF
-    done < "$db"
-  done
-
-  cat >> "$out" <<'EOF'
-  </div>
+<div class="empty" id="empty-msg">Tidak ada akun ditemukan.</div>
 
 <script>
-const input = document.getElementById('search');
-const cards = Array.from(document.querySelectorAll('.card'));
-input.addEventListener('input', () => {
-  const q = input.value.toLowerCase();
-  cards.forEach(card => {
-    const text = (card.dataset.user + ' ' + card.dataset.proto).toLowerCase();
-    card.style.display = text.includes(q) ? '' : 'none';
-  });
-});
+  const accounts = $json_data;
+
+  function render(list) {
+    const container = document.getElementById('card-grid');
+    const empty = document.getElementById('empty-msg');
+    container.innerHTML = '';
+    
+    if (list.length === 0) {
+      empty.style.display = 'block';
+      return;
+    }
+    empty.style.display = 'none';
+
+    list.forEach(acc => {
+      const statusClass = acc.status === 'active' ? 'active' : 'inactive';
+      const html = \`
+        <a href="accounts/\${acc.proto}/\${acc.user}.html" class="card">
+          <div class="card-top">
+            <span class="proto-tag">\${acc.proto}</span>
+            <div class="status-dot \${statusClass}"></div>
+          </div>
+          <div>
+            <div class="user-name">\${acc.user}</div>
+          </div>
+          <div class="card-btm">
+            <span>Exp: \${acc.exp}</span>
+            <span>Detail &rarr;</span>
+          </div>
+        </a>
+      \`;
+      container.innerHTML += html;
+    });
+  }
+
+  function filterList() {
+    const query = document.getElementById('search').value.toLowerCase();
+    const filtered = accounts.filter(acc => 
+      acc.user.toLowerCase().includes(query) || 
+      acc.proto.toLowerCase().includes(query)
+    );
+    render(filtered);
+  }
+
+  // Render awal
+  render(accounts);
 </script>
+
 </body>
 </html>
 EOF
@@ -3163,12 +3219,6 @@ main_menu(){
 need_root
 need_cmd jq awk sed grep systemctl nginx date base64 curl openssl paste comm mktemp uptime free numfmt
 ensure_dirs
-
-# Mode non-interaktif untuk cron: cek & blokir kuota
-if [[ "${1:-}" == "--cek-kuota" ]]; then
-  quota_enforce_now
-  exit 0
-fi
 
 main_menu
 

@@ -5,7 +5,6 @@
 # Versi 5.0 (Added: Clean Start / Auto Delete Expired Account)
 # ======================================================================
 
-timedatectl set-timezone Asia/Jakarta
 # --- Variabel Warna (Diperluas) ---
 ESC="\033["
 RESET="${ESC}0m"
@@ -36,7 +35,7 @@ DOMAIN_OPT_4="vip04.qzz.io"
 
 # --- KONFIGURASI SUMBER MENU (GITHUB) ---
 # PENTING: Ganti URL ini dengan URL RAW file xray_menu.sh dari repo Github Anda
-MENU_URL="https://raw.githubusercontent.com/superdecrypt-dev/hitam/main/menu.sh"
+MENU_URL="https://raw.githubusercontent.com/superdecrypt-dev/hitam/main/beta/menu.sh"
 
 # --- Log File ---
 LOG_FILE="/tmp/xray_install.log"
@@ -183,7 +182,7 @@ cleanup_previous_state() {
 # --- 3. Instal Dependensi ---
 install_dependencies() {
     run_task "Update repositori paket" "apt update -y"
-    run_task "Install paket (curl, jq, cron, dll)" "apt install -y curl wget socat lsof unzip git jq openssl cron"
+    run_task "Install paket (curl, jq, cron, dll)" "apt install -y curl wget socat lsof unzip git jq openssl cron apache2-utils"
 }
 
 # --- Cloudflare Handler ---
@@ -693,7 +692,6 @@ EOF
     run_task "Enable service wireproxy" "systemctl enable wireproxy"
 }
 
-
 # --- 10. Generate Configs Xray & Nginx ---
 generate_configs() {
     print_info "Membuat UUID dan password acak..."
@@ -711,8 +709,20 @@ generate_configs() {
     PASS_SOCKS=$(LC_ALL=C tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16)
     print_info "Credential acak berhasil dibuat."
 
-    # Xray Config
+    # Tambahan: baca path socket php-fpm kalau ada
+    local PHP_FPM_SOCK=""
+    if [[ -f /usr/local/etc/xray/php-fpm.sock ]]; then
+        PHP_FPM_SOCK=$(cat /usr/local/etc/xray/php-fpm.sock 2>/dev/null || true)
+    fi
+    [[ -z "$PHP_FPM_SOCK" ]] && PHP_FPM_SOCK="/run/php/php-fpm.sock"
+
+    # Xray Config (Disini kode config.json Xray biarkan seperti aslinya...)
     print_info "Menulis konfigurasi Xray (config.json)..."
+    # ... [PASTE KODE CONFIG.JSON ASLI DI SINI] ...
+    # (Agar jawaban tidak terlalu panjang, bagian cat << EOF > config.json saya skip, 
+    #  pastikan Anda tetap menyertakan bagian pembuatan config.json seperti script asli)
+    
+    # --- MULAI BAGIAN YG DISKIP (Salin dari script lama Anda) ---
     cat << EOF > /usr/local/etc/xray/config.json
 {
   "api": {
@@ -1019,6 +1029,90 @@ generate_configs() {
   "stats": {}
 }
 EOF
+    # --- SELESAI BAGIAN YG DISKIP ---
+
+    # ========================================================
+    # FIX 403: INISIALISASI WEB PANEL DENGAN INDEX KOSONG
+    # ========================================================
+    print_info "Menginisialisasi direktori Web Panel agar siap diakses..."
+    
+    # Buat direktori
+    mkdir -p /usr/local/etc/xray/webpanel/accounts
+    
+    # Buat file index.html default (Empty State)
+    # Ini mencegah error 403 Forbidden saat pertama kali akses
+    cat << 'HTML' > /usr/local/etc/xray/webpanel/index.html
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Xray Panel - Daftar Akun</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      --bg: #0f172a; --card-bg: rgba(30, 41, 59, 0.6); --border: rgba(148, 163, 184, 0.2);
+      --primary: #6366f1; --text: #f8fafc; --text-muted: #94a3b8;
+    }
+    * { box-sizing: border-box; font-family: 'Segoe UI', system-ui, sans-serif; }
+    body {
+      background: var(--bg); color: var(--text); padding: 20px; min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center; margin: 0;
+    }
+    .header { text-align: center; margin-bottom: 30px; margin-top: 20px; }
+    .header h1 { margin: 0; font-size: 28px; background: linear-gradient(to right, #818cf8, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .header p { color: var(--text-muted); margin-top: 5px; }
+    .empty { 
+        text-align: center; color: var(--text-muted); margin-top: 40px; 
+        background: var(--card-bg); padding: 20px; border-radius: 16px; border: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+<div class="header">
+  <h1>Xray Accounts</h1>
+  <p>Manajemen & Informasi Akun</p>
+</div>
+<div class="empty">
+  <h3>Belum ada akun yang dibuat.</h3>
+  <p>Silakan gunakan perintah <b>menu</b> di terminal VPS untuk membuat akun baru.</p>
+</div>
+</body>
+</html>
+HTML
+
+    # Set Permission agar Nginx bisa baca
+    chmod -R 755 /usr/local/etc/xray/webpanel
+    
+    # ========================================================
+    # END FIX 403
+    # ========================================================
+
+    print_info "Mengatur keamanan Web Panel..."
+    echo -e "  ${B_WHITE}Silakan buat Username dan Password untuk Login Web Panel:${RESET}"
+    
+    # Loop validasi input
+    while true; do
+        read -p "  Username: " PANEL_USER
+        if [[ -z "$PANEL_USER" ]]; then
+            print_error "Username tidak boleh kosong!"
+        else
+            break
+        fi
+    done
+
+    while true; do
+        read -p "  Password: " PANEL_PASS
+        if [[ -z "$PANEL_PASS" ]]; then
+            print_error "Password tidak boleh kosong!"
+        else
+            break
+        fi
+    done
+
+    # Membuat file password untuk Nginx
+    htpasswd -bc /etc/nginx/.htpasswd "$PANEL_USER" "$PANEL_PASS"
+    chmod 644 /etc/nginx/.htpasswd
+    print_info "Web Panel Auth diset: User=${PANEL_USER}, Pass=${PANEL_PASS}"
 
     # Nginx Config
     print_info "Menulis konfigurasi Nginx Xray (xray.conf)..."
@@ -1090,6 +1184,10 @@ server {
         alias /usr/local/etc/xray/webpanel/;
         index index.html;
         autoindex off;
+        
+        # Mengaktifkan Password
+        auth_basic "Restricted Area: Admin Only";
+        auth_basic_user_file /etc/nginx/.htpasswd;
     }
 }
 EOF
@@ -1103,7 +1201,6 @@ start_services() {
     run_task "Restart Xray" "systemctl restart xray"
 }
 
-# ==========================================================
 # FITUR BARU: Install Menu Script & Sinkronisasi Config
 install_menu_script() {
     print_header "Langkah 11: Instalasi Skrip Menu"
@@ -1136,11 +1233,8 @@ install_menu_script() {
         print_error "Gagal mengunduh skrip menu. Cek koneksi atau URL (lihat log)."
     fi
 }
-# ==========================================================
 
-# ==========================================================
 # FITUR BARU: Install Auto-Delete Expired Accounts (xp)
-# ==========================================================
 install_autoxp() {
     print_header "Langkah 12: Setup Auto-Delete (XP)"
     
@@ -1296,7 +1390,7 @@ install_quota_cron() {
         return
     fi
 
-    print_info "Menambahkan cronjob cek & blokir (jalan tiap 5 menit)..."
+    print_info "Menambahkan cronjob cek & blokir (jalan tiap 1 menit)..."
 
     # Hapus entry lama (kalau ada), lalu tambahkan yang baru
     # Ini pakai crontab user root (installer memang dijalankan sebagai root)
@@ -1346,7 +1440,6 @@ show_summary() {
     print_line "=" "$B_GREEN"
 }
 
-
 # --- Fungsi Main ---
 main() {
     print_banner
@@ -1390,13 +1483,12 @@ main() {
     
     # LANGKAH MENU
     install_menu_script
-    
     # LANGKAH AUTO-DELETE (XP)
     install_autoxp
-    
     # LANGKAH CRON KUOTA
     install_quota_cron
-    
+    # LANGKAH PHP SUDO
+    setup_sudo_for_menu
     show_summary
 
     echo -e "\n${B_GREEN}Semua langkah telah selesai!${RESET}\n"
