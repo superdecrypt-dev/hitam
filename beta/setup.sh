@@ -1189,6 +1189,8 @@ EOF
                     <option value="vless">VLESS</option>
                     <option value="trojan">Trojan</option>
                     <option value="shadowsocks">Shadowsocks</option>
+                    <option value="http">HTTP</option>
+                    <option value="socks">Socks</option>
                 </select>
             </div>
             <div class="col-md-2">
@@ -1234,7 +1236,7 @@ EOF
                         <option value="vless">VLESS</option>
                         <option value="trojan">Trojan</option>
                         <option value="shadowsocks">Shadowsocks</option>
-                        <option value="http">HTTP Upgrade</option>
+                        <option value="http">HTTP</option>
                         <option value="socks">SOCKS5</option>
                     </select>
                 </div>
