@@ -1873,7 +1873,7 @@ render_account_html(){
 <head>
   <meta charset="UTF-8">
   <title>Detail Akun XRAY - ${user}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -1882,58 +1882,60 @@ render_account_html(){
       min-height: 100vh;
       background:
         radial-gradient(circle at top, #1d4ed8 0, transparent 55%),
-        radial-gradient(circle at bottom, #0f766e 0, #020617 60%);
+        radial-gradient(circle at bottom, #0f172a 0, #020617 60%);
       color: #e5e7eb;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 16px;
+      padding: 10px 8px 18px;
+    }
+
+    @media (min-width: 640px) {
+      body { padding: 18px 12px 24px; }
     }
 
     .card {
       width: 100%;
-      max-width: 820px;
-      background: rgba(15,23,42,0.96);
-      border-radius: 24px;
+      max-width: 720px;
+      margin: 0 auto;
+      background: rgba(15,23,42,0.98);
+      border-radius: 20px;
       box-shadow:
-        0 22px 45px rgba(15,23,42,0.9),
-        0 0 0 1px rgba(148,163,184,0.12);
-      padding: 24px 22px 20px;
-      backdrop-filter: blur(18px);
-      border: 1px solid rgba(148,163,184,0.25);
+        0 18px 40px rgba(15,23,42,0.9),
+        0 0 0 1px rgba(148,163,184,0.18);
+      padding: 16px 14px 14px;
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(148,163,184,0.3);
     }
 
     @media (min-width: 640px) {
-      .card { padding: 28px 28px 22px; }
+      .card { padding: 20px 20px 16px; }
     }
 
     .card-header {
       display: flex;
       justify-content: space-between;
-      gap: 12px;
+      gap: 8px;
       align-items: center;
-      margin-bottom: 18px;
+      margin-bottom: 10px;
     }
 
     .title-block h1 {
-      font-size: 1.25rem;
+      font-size: 1.05rem;
       font-weight: 700;
-      letter-spacing: 0.03em;
+      letter-spacing: 0.04em;
       text-transform: uppercase;
       color: #e5e7eb;
-      margin-bottom: 4px;
+      margin-bottom: 2px;
     }
 
     .title-block p {
-      font-size: 0.85rem;
+      font-size: 0.78rem;
       color: #9ca3af;
     }
 
     .badge-proto {
-      padding: 6px 12px;
+      padding: 4px 10px;
       border-radius: 999px;
-      font-size: 0.8rem;
-      letter-spacing: 0.18em;
+      font-size: 0.72rem;
+      letter-spacing: 0.17em;
       text-transform: uppercase;
       font-weight: 600;
       color: #f97316;
@@ -1945,18 +1947,18 @@ render_account_html(){
     .status-row {
       display: flex;
       flex-wrap: wrap;
-      gap: 10px;
+      gap: 6px;
       align-items: center;
-      margin-bottom: 18px;
+      margin-bottom: 10px;
     }
 
     .status-pill {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      padding: 6px 12px;
+      padding: 4px 10px;
       border-radius: 999px;
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       font-weight: 600;
       border: 1px solid transparent;
       background: ${status_bg};
@@ -1965,41 +1967,43 @@ render_account_html(){
     }
 
     .status-dot {
-      width: 8px;
-      height: 8px;
+      width: 7px;
+      height: 7px;
       border-radius: 999px;
       background: ${status_color};
-      box-shadow: 0 0 12px ${status_color};
+      box-shadow: 0 0 10px ${status_color};
     }
 
     .status-text {
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       color: #9ca3af;
+      flex: 1;
+      min-width: 140px;
     }
 
     .section {
-      margin-top: 12px;
-      padding-top: 14px;
+      margin-top: 10px;
+      padding-top: 10px;
       border-top: 1px dashed rgba(75,85,99,0.7);
     }
 
     .section + .section {
-      margin-top: 16px;
+      margin-top: 12px;
     }
 
     .section-title {
-      font-size: 0.85rem;
+      font-size: 0.78rem;
       text-transform: uppercase;
-      letter-spacing: 0.2em;
+      letter-spacing: 0.18em;
       color: #9ca3af;
-      margin-bottom: 8px;
+      margin-bottom: 6px;
     }
 
     .kv-grid {
       display: grid;
-      grid-template-columns: minmax(0, 1.1fr) minmax(0, 2.2fr);
-      gap: 6px 14px;
-      font-size: 0.9rem;
+      grid-template-columns: minmax(0, 1.1fr) minmax(0, 2.1fr);
+      gap: 4px 12px;
+      font-size: 0.84rem;
     }
 
     .kv-label {
@@ -2013,27 +2017,27 @@ render_account_html(){
 
     .kv-value code {
       background: #020617;
-      padding: 2px 6px;
-      border-radius: 6px;
-      font-size: 0.8rem;
+      padding: 1px 5px;
+      border-radius: 5px;
+      font-size: 0.78rem;
       border: 1px solid rgba(15,23,42,0.8);
     }
 
     .quota-box {
-      padding: 10px 12px;
-      border-radius: 16px;
+      padding: 8px 10px;
+      border-radius: 14px;
       background: radial-gradient(circle at top left, rgba(56,189,248,0.14), rgba(15,23,42,0.96));
       border: 1px solid rgba(148,163,184,0.35);
       display: grid;
-      gap: 6px;
-      font-size: 0.85rem;
+      gap: 5px;
+      font-size: 0.8rem;
     }
 
     .quota-top {
       display: flex;
       flex-wrap: wrap;
       justify-content: space-between;
-      gap: 6px;
+      gap: 4px;
       align-items: center;
     }
 
@@ -2049,7 +2053,7 @@ render_account_html(){
 
     .quota-progress {
       width: 100%;
-      height: 6px;
+      height: 5px;
       border-radius: 999px;
       background: rgba(15,23,42,0.9);
       overflow: hidden;
@@ -2061,57 +2065,57 @@ render_account_html(){
       width: ${quota_percent}%;
       max-width: 100%;
       background: linear-gradient(90deg, #22c55e, #eab308, #ef4444);
-      box-shadow: 0 0 12px rgba(59,130,246,0.65);
+      box-shadow: 0 0 10px rgba(59,130,246,0.65);
       transition: width 0.4s ease-out;
     }
 
     .quota-footnote {
-      font-size: 0.78rem;
+      font-size: 0.74rem;
       color: #9ca3af;
     }
 
     .config-block {
-      margin-top: 10px;
-      padding: 10px 12px;
-      border-radius: 16px;
-      background: rgba(15,23,42,0.95);
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: 14px;
+      background: rgba(15,23,42,0.97);
       border: 1px solid rgba(55,65,81,0.9);
       display: grid;
-      gap: 6px;
+      gap: 5px;
     }
 
     .config-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
     }
 
     .config-title {
-      font-size: 0.85rem;
+      font-size: 0.8rem;
       color: #e5e7eb;
       font-weight: 500;
     }
 
     .config-sub {
-      font-size: 0.76rem;
+      font-size: 0.72rem;
       color: #9ca3af;
     }
 
     .config-body {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 5px;
     }
 
     pre {
       margin: 0;
-      padding: 8px 10px;
+      padding: 7px 9px;
       border-radius: 10px;
       background: #020617;
       color: #e5e7eb;
-      font-size: 0.78rem;
-      max-height: 140px;
+      font-size: 0.76rem;
+      max-height: 120px;
       overflow: auto;
       border: 1px solid rgba(31,41,55,0.95);
       word-wrap: break-word;
@@ -2120,30 +2124,30 @@ render_account_html(){
 
     .btn {
       border: none;
-      padding: 6px 12px;
+      padding: 5px 10px;
       border-radius: 999px;
-      font-size: 0.8rem;
+      font-size: 0.76rem;
       font-weight: 500;
       cursor: pointer;
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
       white-space: nowrap;
       background: #1d4ed8;
       color: #e5e7eb;
-      box-shadow: 0 9px 20px rgba(37,99,235,0.4);
+      box-shadow: 0 6px 16px rgba(37,99,235,0.45);
       transition: transform 0.08s ease-out, box-shadow 0.08s ease-out, background 0.08s ease-out;
     }
 
     .btn:hover {
       transform: translateY(-1px);
-      box-shadow: 0 12px 26px rgba(37,99,235,0.55);
+      box-shadow: 0 10px 22px rgba(37,99,235,0.6);
       background: #2563eb;
     }
 
     .btn:active {
       transform: translateY(0);
-      box-shadow: 0 5px 10px rgba(37,99,235,0.35);
+      box-shadow: 0 4px 10px rgba(37,99,235,0.35);
     }
 
     .btn-outline {
@@ -2158,16 +2162,28 @@ render_account_html(){
       color: #e5e7eb;
     }
 
+    @media (max-width: 480px) {
+      .config-header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .btn, .btn-outline {
+        width: 100%;
+        justify-content: center;
+      }
+    }
+
     .footer {
-      margin-top: 16px;
+      margin-top: 10px;
       display: flex;
       justify-content: space-between;
-      gap: 8px;
+      gap: 6px;
       align-items: center;
-      font-size: 0.78rem;
+      font-size: 0.74rem;
       color: #6b7280;
       border-top: 1px dashed rgba(55,65,81,0.9);
-      padding-top: 10px;
+      padding-top: 8px;
+      flex-wrap: wrap;
     }
 
     .footer span strong {
@@ -2175,9 +2191,9 @@ render_account_html(){
     }
 
     .note {
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       color: #9ca3af;
-      margin-top: 6px;
+      margin-top: 5px;
     }
 
     .note a {
@@ -2192,23 +2208,24 @@ render_account_html(){
     .toast {
       position: fixed;
       left: 50%;
-      bottom: 22px;
+      bottom: 18px;
       transform: translateX(-50%);
-      background: rgba(15,23,42,0.96);
+      background: rgba(15,23,42,0.97);
       color: #e5e7eb;
-      padding: 8px 14px;
-      font-size: 0.8rem;
+      padding: 7px 12px;
+      font-size: 0.78rem;
       border-radius: 999px;
       border: 1px solid rgba(148,163,184,0.6);
-      box-shadow: 0 8px 22px rgba(15,23,42,0.9);
+      box-shadow: 0 8px 20px rgba(15,23,42,0.9);
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.2s ease-out, transform 0.2s ease-out;
+      z-index: 50;
     }
 
     .toast.show {
       opacity: 1;
-      transform: translate(-50%, -4px);
+      transform: translate(-50%, -3px);
     }
   </style>
 </head>
