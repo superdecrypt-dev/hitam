@@ -183,7 +183,7 @@ cleanup_previous_state() {
 install_dependencies() {
     run_task "Update repositori paket" "apt update -y"
     # Tambahkan php-fpm dan php-cli
-    run_task "Install paket pendukung" "apt install -y curl wget socat lsof unzip git jq openssl cron apache2-utils php-fpm php-cli"
+    run_task "Install paket pendukung" "apt install -y curl wget socat lsof unzip git jq openssl cron apache2-utils python3"
 }
 
 # --- Cloudflare Handler ---
@@ -1067,81 +1067,113 @@ generate_configs() {
   "stats": {}
 }
 EOF
-    # --- SELESAI BAGIAN YG DISKIP ---
 
-    # ========================================================
-    # FIX 403: INISIALISASI WEB PANEL DENGAN INDEX KOSONG
-    # ========================================================
-    print_info "Menginisialisasi direktori Web Panel agar siap diakses..."
+
+    print_info "Menyiapkan Web Panel (Python Backend)..."
     
-    # Buat direktori
     mkdir -p /usr/local/etc/xray/webpanel/accounts
     
-    # 1. Buat API PHP (Backend)
-    cat << 'EOF' > /usr/local/etc/xray/webpanel/api.php
-<?php
-header('Content-Type: application/json');
+    # 1. Buat API Python (Pengganti PHP)
+    cat << 'EOF' > /usr/local/etc/xray/webpanel/api.py
+import http.server
+import socketserver
+import json
+import subprocess
+import sys
 
-// Proteksi dasar (sudah diproteksi Basic Auth Nginx, tapi ini double check)
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    echo json_encode(['status' => 'error', 'message' => 'Invalid Request']);
-    exit;
-}
+PORT = 10000
+MENU_BIN = "/usr/local/bin/menu"
 
-$input = json_decode(file_get_contents('php://input'), true);
-$action = $input['action'] ?? '';
-$secret_token = 'XRAY_API_TOKEN'; // Token internal
+class APIHandler(http.server.BaseHTTPRequestHandler):
+    def _set_headers(self, code=200):
+        self.send_response(code)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
 
-// Command Executor Wrapper
-function run_menu_cmd($args) {
-    // Panggil script menu dengan flag API
-    $cmd = "sudo /usr/local/bin/menu " . $args;
-    $output = shell_exec($cmd);
-    return trim($output);
-}
+    def do_POST(self):
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
+            action = data.get('action')
+            cmd = []
 
-switch ($action) {
-    case 'list':
-        // List akun diambil langsung dari JSON output menu
-        $raw = run_menu_cmd("--api-list");
-        echo $raw; // Output sudah JSON dari bash
-        break;
+            if action == 'list':
+                cmd = [MENU_BIN, "--api-list"]
+            
+            elif action == 'create':
+                cmd = [
+                    MENU_BIN, "--api-create",
+                    data.get('proto', ''),
+                    data.get('user', ''),
+                    str(data.get('exp', '')),
+                    str(data.get('quota', '0'))
+                ]
+            
+            elif action == 'delete':
+                cmd = [MENU_BIN, "--api-delete", data.get('proto', ''), data.get('user', '')]
+            
+            elif action == 'renew':
+                cmd = [MENU_BIN, "--api-renew", data.get('proto', ''), data.get('user', ''), str(data.get('days', ''))]
+            
+            else:
+                self._set_headers(400)
+                self.wfile.write(json.dumps({"status": "error", "message": "Invalid action"}).encode())
+                return
 
-    case 'create':
-        $user = escapeshellarg($input['user']);
-        $proto = escapeshellarg($input['proto']);
-        $exp = escapeshellarg($input['exp']);
-        $quota = escapeshellarg($input['quota'] ?? 0);
-        
-        $result = run_menu_cmd("--api-create $proto $user $exp $quota");
-        echo $result;
-        break;
+            # Eksekusi command bash
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            # Coba parsing output bash sebagai JSON (validasi)
+            try:
+                # Bash script harus output JSON murni
+                output_json = json.loads(result.stdout.strip())
+                self._set_headers(200)
+                self.wfile.write(json.dumps(output_json).encode())
+            except json.JSONDecodeError:
+                # Jika bash error teks biasa
+                self._set_headers(500)
+                err_msg = result.stderr if result.stderr else result.stdout
+                self.wfile.write(json.dumps({"status": "error", "message": "Backend Error", "debug": err_msg}).encode())
 
-    case 'delete':
-        $user = escapeshellarg($input['user']);
-        $proto = escapeshellarg($input['proto']);
-        
-        $result = run_menu_cmd("--api-delete $proto $user");
-        echo $result;
-        break;
+        except Exception as e:
+            self._set_headers(500)
+            self.wfile.write(json.dumps({"status": "error", "message": str(e)}).encode())
 
-    case 'renew':
-        $user = escapeshellarg($input['user']);
-        $proto = escapeshellarg($input['proto']);
-        $days = escapeshellarg($input['days']);
-        
-        $result = run_menu_cmd("--api-renew $proto $user $days");
-        echo $result;
-        break;
+class ThreadingSimpleServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    pass
 
-    default:
-        echo json_encode(['status' => 'error', 'message' => 'Unknown action']);
-        break;
-}
-?>
+if __name__ == "__main__":
+    server = ThreadingSimpleServer(('127.0.0.1', PORT), APIHandler)
+    print(f"Xray API Server running on port {PORT}")
+    server.serve_forever()
 EOF
 
-    # 2. Buat Index HTML (Frontend SPA)
+    # 2. Buat Service Systemd untuk Python API
+    cat <<EOF > /etc/systemd/system/xray-api.service
+[Unit]
+Description=Xray Panel API (Python)
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/usr/local/etc/xray/webpanel
+ExecStart=/usr/bin/python3 /usr/local/etc/xray/webpanel/api.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Reload Systemd & Start API
+    systemctl daemon-reload
+    systemctl enable xray-api
+    systemctl restart xray-api
+
+    # 3. Buat Index HTML (Frontend) - Updated URL API
     cat << 'EOF' > /usr/local/etc/xray/webpanel/index.html
 <!DOCTYPE html>
 <html lang="id">
@@ -1236,7 +1268,7 @@ EOF
                         <option value="vless">VLESS</option>
                         <option value="trojan">Trojan</option>
                         <option value="shadowsocks">Shadowsocks</option>
-                        <option value="http">HTTP</option>
+                        <option value="http">HTTP Upgrade</option>
                         <option value="socks">SOCKS5</option>
                     </select>
                 </div>
@@ -1258,7 +1290,8 @@ EOF
 </div>
 
 <script>
-    const API_URL = 'api.php';
+    // PERUBAHAN: Mengarah ke endpoint API Nginx, bukan file .php
+    const API_URL = 'api';
 
     $(document).ready(function() {
         loadAccounts();
@@ -1278,9 +1311,13 @@ EOF
             if(res.status === 'success') {
                 renderTable(res.data);
             } else {
-                Swal.fire('Error', 'Gagal memuat data', 'error');
+                console.error(res);
+                Swal.fire('Error', 'Gagal memuat data. Cek console.', 'error');
             }
-        }, 'json').fail(() => { showLoading(false); });
+        }, 'json').fail(() => { 
+            showLoading(false); 
+            Swal.fire('Error', 'Koneksi ke API gagal.', 'error');
+        });
     }
 
     let allAccounts = [];
@@ -1292,12 +1329,10 @@ EOF
             html = '<tr><td colspan="6" class="text-center text-muted">Tidak ada akun ditemukan</td></tr>';
         } else {
             data.forEach(acc => {
-                // Tentukan warna badge status
                 let statusBadge = acc.status === 'active' 
                     ? '<span class="badge bg-success">Aktif</span>' 
                     : '<span class="badge bg-danger">Nonaktif</span>';
                 
-                // Fix Tampilan User: Pakai style inline agar tidak tertimpa
                 html += `<tr>
                     <td>
                         <div style="font-weight:bold; color: #fff; font-size: 1.1em;">${acc.user}</div>
@@ -1358,7 +1393,6 @@ EOF
             if(res.status === 'success') {
                 Swal.fire('Sukses', res.message, 'success');
                 loadAccounts();
-                // Buka detail di tab baru
                 if(res.link) window.open(res.link, '_blank');
             } else {
                 Swal.fire('Gagal', res.message, 'error');
@@ -1510,12 +1544,13 @@ server {
         auth_basic "Restricted Area: Admin Only";
         auth_basic_user_file /etc/nginx/.htpasswd;
 
-        # Handler PHP
-        location ~ \.php$ {
-            include fastcgi_params;
-            fastcgi_param SCRIPT_FILENAME \$request_filename;
-            fastcgi_pass unix:${PHP_SOCK};
+        # API Endpoint -> Proxy ke Python Service
+        location /panel/api {
+            proxy_pass http://127.0.0.1:10000;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
         }
+
     }
 }
 EOF
