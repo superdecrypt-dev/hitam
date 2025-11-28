@@ -2109,39 +2109,39 @@ sync_quota_to_webpanel(){
 }
 
 rebuild_web_index(){
-  # --- PERBAIKAN UNTUK PANEL INTERAKTIF ---
-  # Fungsi ini sebelumnya menimpa index.html dengan versi statis.
-  # Karena kita sekarang menggunakan Panel Interaktif (PHP + JS),
-  # kita TIDAK BOLEH menimpa file index.html utama.
-  
-  # Sebagai gantinya, kita buat file backup statis bernama 'static_list.html'
-  # jaga-jaga jika API error.
-  
-  local out="$WEB_PANEL_DIR/static_list.html" # <-- NAMA FILE DIUBAH
+  local out="$WEB_PANEL_DIR/static_list.html"
   mkdir -p "$WEB_PANEL_DIR/accounts"
 
-  # Data JSON untuk pencarian client-side (Logic lama, tetap dipertahankan untuk static list)
+  # --- OPTIMASI: BACA DB KE MEMORY DULU ---
+  declare -A usage_map
+  declare -A limit_map
+  if [[ -f "$QUOTA_DB" ]]; then
+      while IFS='|' read -r q_user q_limit q_used rest; do
+          usage_map["$q_user"]="$q_used"
+          limit_map["$q_user"]="$q_limit"
+      done < "$QUOTA_DB"
+  fi
+
   local json_data="["
   local first=1
   
   for p in vmess vless trojan shadowsocks http socks; do
     local f="$ACCOUNTS_DIR/$p.db"
     if [[ -f "$f" ]]; then
-      while IFS='|' read -r u s e c q; do
+      while IFS='|' read -r u s e c q_static; do
+        u=$(echo "$u" | tr -d '\r\n')
         [[ -z "$u" ]] && continue
         if [[ $first -eq 0 ]]; then json_data+=","; fi
         
+        # Logika Status Cepat
+        local current_limit=${limit_map["$u"]:-0}
+        local current_usage=${usage_map["$u"]:-0}
+        [[ "$current_limit" == "0" || -z "$current_limit" ]] && current_limit="$q_static"
+        [[ -z "$current_limit" ]] && current_limit=0
+        
         local status="active"
-        if [[ -s "$QUOTA_DB" ]]; then
-           local qline=$(grep "^$u|" "$QUOTA_DB" 2>/dev/null || true)
-           if [[ -n "$qline" ]]; then
-               local qtot=$(echo "$qline" | cut -d'|' -f2)
-               local qused=$(echo "$qline" | cut -d'|' -f3)
-               [[ -z "$qused" ]] && qused=0
-               if (( qtot > 0 )); then
-                 if (( qused >= qtot )); then status="inactive"; fi
-               fi
-           fi
+        if (( current_limit > 0 )); then
+             if (( current_usage >= current_limit )); then status="inactive"; fi
         fi
         
         json_data+="{\"user\":\"$u\",\"proto\":\"$p\",\"exp\":\"$e\",\"status\":\"$status\"}"
@@ -2162,17 +2162,19 @@ rebuild_web_index(){
     body { background: #0f172a; color: white; font-family: sans-serif; padding: 20px; }
     .card { background: #1e293b; padding: 10px; margin-bottom: 10px; border-radius: 8px; border: 1px solid #334155; display:block; text-decoration:none; color:white;}
     .badge { background: #6366f1; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+    .inactive { border-color: #ef4444; opacity: 0.7; }
   </style>
 </head>
 <body>
 <h3>Daftar Akun (Mode Statis)</h3>
-<p>Ini adalah halaman cadangan. <a href="index.html" style="color:#6366f1">Ke Panel Interaktif</a></p>
+<p>Ini adalah halaman cadangan. <a href="../index.html" style="color:#6366f1">Ke Panel Interaktif</a></p>
 <div id="grid"></div>
 <script>
   const data = $json_data;
   const grid = document.getElementById('grid');
   data.forEach(acc => {
-      grid.innerHTML += \`<a href="accounts/\${acc.proto}/\${acc.user}.html" class="card">
+      let cl = acc.status === 'active' ? '' : 'inactive';
+      grid.innerHTML += \`<a href="accounts/\${acc.proto}/\${acc.user}.html" class="card \${cl}">
         <span class="badge">\${acc.proto}</span> <b>\${acc.user}</b> <small>(Exp: \${acc.exp})</small>
       </a>\`;
   });
@@ -3229,7 +3231,7 @@ if [[ "$1" == "--api-create" ]]; then
         http|socks) add_client_acct "$proto" "$user" "$secret";;
     esac
     
-    restart_xray
+    systemctl restart xray
     
     created="$(date +%F)"; exp="$(date -d "+$days days" +%F)"
     ledger_add "$proto" "$user" "$secret" "$exp" "$created" "$quota"
@@ -3260,7 +3262,7 @@ if [[ "$1" == "--api-delete" ]]; then
         vmess|vless|trojan|shadowsocks) del_client_std "$proto" "$user";;
         http|socks) del_client_acct "$proto" "$user";;
     esac
-    restart_xray
+    systemctl restart xray
     ledger_del "$proto" "$user"
     
     # Hapus file-file
