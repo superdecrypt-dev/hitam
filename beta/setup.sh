@@ -1753,12 +1753,12 @@ install_quota_cron() {
         return
     fi
 
-    print_info "Menambahkan cronjob cek & blokir (jalan tiap 1 menit)..."
+    print_info "Menambahkan cronjob cek & blokir (jalan tiap 5 menit)..."
 
     # Hapus entry lama (kalau ada), lalu tambahkan yang baru
     # Ini pakai crontab user root (installer memang dijalankan sebagai root)
     (crontab -l 2>/dev/null | grep -v "/usr/local/bin/menu --cek-kuota" ; \
-     echo "*/1 * * * * /usr/local/bin/menu --cek-kuota >/dev/null 2>&1") | crontab -
+     echo "*/5 * * * * /usr/local/bin/menu --cek-kuota >/dev/null 2>&1") | crontab -
 
     # Restart service cron supaya aman
     run_task "Restart service cron (untuk cron kuota)" "systemctl restart cron"
