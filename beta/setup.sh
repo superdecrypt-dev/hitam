@@ -717,9 +717,11 @@ generate_configs() {
     fi
     [[ -z "$PHP_FPM_SOCK" ]] && PHP_FPM_SOCK="/run/php/php-fpm.sock"
 
-    # Set Permission Web Panel
-    chown -R www-data:www-data /usr/local/etc/xray/webpanel
-    chmod -R 755 /usr/local/etc/xray/webpanel
+    # Set Permission Web Panel# Set Permission Web Panel (kalau sudah ada foldernya)
+    if [[ -d /usr/local/etc/xray/webpanel ]]; then
+        chown -R www-data:www-data /usr/local/etc/xray/webpanel
+        chmod -R 755 /usr/local/etc/xray/webpanel
+    fi
 
     # FIX: INPUT INTERAKTIF USERNAME & PASSWORD PANEL
     print_header "Konfigurasi Keamanan Web Panel"
@@ -1081,7 +1083,7 @@ import json
 import subprocess
 import sys
 
-PORT = 10000
+PORT = 10001
 MENU_BIN = "/usr/local/bin/menu"
 
 class APIHandler(http.server.BaseHTTPRequestHandler):
@@ -1462,12 +1464,18 @@ EOF
     print_info "Menulis konfigurasi Nginx Xray (xray.conf) dengan dukungan PHP..."
     
     # Deteksi socket PHP (biasanya /run/php/php8.1-fpm.sock atau similar)
-    # Kita cari otomatis
-    PHP_SOCK=$(find /run/php -name "php*-fpm.sock" | head -n 1)
-    if [[ -z "$PHP_SOCK" ]]; then PHP_SOCK="/run/php/php-fpm.sock"; fi
+    # Kita cari otomatisPHP_SOCK=""
+
+    if [[ -d /run/php ]]; then
+        PHP_SOCK=$(find /run/php -name "php*-fpm.sock" | head -n 1)
+    fi
     
-    # Simpan path socket agar installer tau
+    if [[ -z "$PHP_SOCK" ]]; then
+        PHP_SOCK="/run/php/php-fpm.sock"
+    fi
+    
     echo "$PHP_SOCK" > /usr/local/etc/xray/php-fpm.sock
+    
 
     cat << EOF > /etc/nginx/conf.d/xray.conf
 map \$http_upgrade \$connection_upgrade {
@@ -1546,7 +1554,7 @@ server {
 
         # API Endpoint -> Proxy ke Python Service
         location /panel/api {
-            proxy_pass http://127.0.0.1:10000;
+            proxy_pass http://127.0.0.1:10001;
             proxy_set_header Host \$host;
             proxy_set_header X-Real-IP \$remote_addr;
         }
@@ -1763,7 +1771,7 @@ install_quota_cron() {
     # Restart service cron supaya aman
     run_task "Restart service cron (untuk cron kuota)" "systemctl restart cron"
 
-    print_info "Cron cek kuota berhasil dijadwalkan (*/1 menit)."
+    print_info "Cron cek kuota berhasil dijadwalkan (*/5 menit)."
 }
 
 setup_sudo_for_menu() {
