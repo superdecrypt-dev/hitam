@@ -2,7 +2,7 @@
 
 # ======================================================================
 # Skrip Instalasi Xray-core & Nginx (Auto DNS Cloudflare + Validasi)
-# Versi 5.0 (Added: Clean Start / Auto Delete Expired Account)
+# Versi 5.1 (Python Web Panel + Clean Start + Auto Delete + Kuota)
 # ======================================================================
 
 # --- Variabel Warna (Diperluas) ---
@@ -693,8 +693,8 @@ EOF
     run_task "Enable service wireproxy" "systemctl enable wireproxy"
 }
 
-# --- 10. Generate Configs Xray & Nginx ---
-generate_configs() {
+# --- 10. Setup Xray, Nginx & Web Panel ---
+setup_xray_nginx_and_panel() {
     print_info "Membuat UUID dan password acak..."
     UUID_VMESS=$(/usr/local/bin/xray uuid)
     UUID_VLESS=$(/usr/local/bin/xray uuid)
@@ -1071,388 +1071,37 @@ generate_configs() {
 EOF
 
 
-    print_info "Menyiapkan Web Panel (Python Backend)..."
-    
+    print_info "Menyiapkan Web Panel (Mode Statis)..."
+
     mkdir -p /usr/local/etc/xray/webpanel/accounts
-    
-    # 1. Buat API Python (Pengganti PHP)
-    cat << 'EOF' > /usr/local/etc/xray/webpanel/api.py
-import http.server
-import socketserver
-import json
-import subprocess
-import sys
 
-PORT = 10001
-MENU_BIN = "/usr/local/bin/menu"
-
-class APIHandler(http.server.BaseHTTPRequestHandler):
-    def _set_headers(self, code=200):
-        self.send_response(code)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-
-    def do_POST(self):
-        try:
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            data = json.loads(post_data.decode('utf-8'))
-            
-            action = data.get('action')
-            cmd = []
-
-            if action == 'list':
-                cmd = [MENU_BIN, "--api-list"]
-            
-            elif action == 'create':
-                cmd = [
-                    MENU_BIN, "--api-create",
-                    data.get('proto', ''),
-                    data.get('user', ''),
-                    str(data.get('exp', '')),
-                    str(data.get('quota', '0'))
-                ]
-            
-            elif action == 'delete':
-                cmd = [MENU_BIN, "--api-delete", data.get('proto', ''), data.get('user', '')]
-            
-            elif action == 'renew':
-                cmd = [MENU_BIN, "--api-renew", data.get('proto', ''), data.get('user', ''), str(data.get('days', ''))]
-            
-            else:
-                self._set_headers(400)
-                self.wfile.write(json.dumps({"status": "error", "message": "Invalid action"}).encode())
-                return
-
-            # Eksekusi command bash
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            # Coba parsing output bash sebagai JSON (validasi)
-            try:
-                # Bash script harus output JSON murni
-                output_json = json.loads(result.stdout.strip())
-                self._set_headers(200)
-                self.wfile.write(json.dumps(output_json).encode())
-            except json.JSONDecodeError:
-                # Jika bash error teks biasa
-                self._set_headers(500)
-                err_msg = result.stderr if result.stderr else result.stdout
-                self.wfile.write(json.dumps({"status": "error", "message": "Backend Error", "debug": err_msg}).encode())
-
-        except Exception as e:
-            self._set_headers(500)
-            self.wfile.write(json.dumps({"status": "error", "message": str(e)}).encode())
-
-class ThreadingSimpleServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    pass
-
-if __name__ == "__main__":
-    server = ThreadingSimpleServer(('127.0.0.1', PORT), APIHandler)
-    print(f"Xray API Server running on port {PORT}")
-    server.serve_forever()
-EOF
-
-    # 2. Buat Service Systemd untuk Python API
-    cat <<EOF > /etc/systemd/system/xray-api.service
-[Unit]
-Description=Xray Panel API (Python)
-After=network.target
-
-[Service]
-User=root
-WorkingDirectory=/usr/local/etc/xray/webpanel
-ExecStart=/usr/bin/python3 /usr/local/etc/xray/webpanel/api.py
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    # Reload Systemd & Start API
-    systemctl daemon-reload
-    systemctl enable xray-api
-    systemctl restart xray-api
-
-    # 3. Buat Index HTML (Frontend) - Updated URL API
+    # Buat Index HTML sederhana (statis, tanpa API untuk buat/hapus/perpanjang akun)
     cat << 'EOF' > /usr/local/etc/xray/webpanel/index.html
 <!DOCTYPE html>
 <html lang="id">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Xray Panel Manager</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/@sweetalert2/theme-dark@4/dark.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
-    <style>
-        :root { --bg: #0f172a; --card: #1e293b; --text: #f8fafc; --accent: #6366f1; }
-        body { background-color: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; }
-        .card { background-color: var(--card); border: 1px solid rgba(255,255,255,0.1); }
-        .btn-primary { background-color: var(--accent); border: none; }
-        .btn-primary:hover { background-color: #4f46e5; }
-        .table { color: var(--text); }
-        .modal-content { background-color: var(--card); color: var(--text); }
-        .status-dot { height: 10px; width: 10px; background-color: #22c55e; border-radius: 50%; display: inline-block; }
-        .loading-overlay { position: fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:9999; display:none; justify-content:center; align-items:center; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Xray Panel (Statis)</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
-<body>
-
-<div class="loading-overlay" id="loading">
-    <div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>
-</div>
-
-<div class="container py-5">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <h2 class="fw-bold"><span class="text-primary">Xray</span> Manager</h2>
-        <button class="btn btn-primary" onclick="openCreateModal()">+ Buat Akun</button>
+<body class="bg-dark text-light">
+  <div class="container py-5">
+    <h2 class="fw-bold mb-3"><span class="text-primary">Xray</span> Panel</h2>
+    <p>Panel web interaktif untuk <strong>buat/hapus/perpanjang</strong> akun telah <span class="text-warning">dinonaktifkan</span>.</p>
+    <p>Halaman ini hanya menampilkan informasi statis akun yang sudah dibuat.</p>
+    <div class="mt-4">
+      <a href="static_list.html" class="btn btn-primary">Lihat Daftar Akun (Statis)</a>
     </div>
-
-    <div class="card p-3 mb-4">
-        <div class="row g-2">
-            <div class="col-md-4">
-                <input type="text" id="search" class="form-control bg-dark text-light border-secondary" placeholder="Cari username...">
-            </div>
-            <div class="col-md-3">
-                <select id="filterProto" class="form-select bg-dark text-light border-secondary">
-                    <option value="all">Semua Protokol</option>
-                    <option value="vmess">VMess</option>
-                    <option value="vless">VLESS</option>
-                    <option value="trojan">Trojan</option>
-                    <option value="shadowsocks">Shadowsocks</option>
-                    <option value="http">HTTP</option>
-                    <option value="socks">Socks</option>
-                </select>
-            </div>
-            <div class="col-md-2">
-                <button class="btn btn-secondary w-100" onclick="loadAccounts()">Refresh</button>
-            </div>
-        </div>
-    </div>
-
-    <div class="card table-responsive">
-        <table class="table table-hover mb-0">
-            <thead>
-                <tr>
-                    <th>User</th>
-                    <th>Proto</th>
-                    <th>Exp</th>
-                    <th>Kuota</th>
-                    <th>Status</th>
-                    <th class="text-end">Aksi</th>
-                </tr>
-            </thead>
-            <tbody id="accTable">
-                </tbody>
-        </table>
-    </div>
-</div>
-
-<div class="modal fade" id="createModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Buat Akun Baru</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <div class="mb-3">
-                    <label>Username</label>
-                    <input type="text" id="c_user" class="form-control bg-dark text-light">
-                </div>
-                <div class="mb-3">
-                    <label>Protokol</label>
-                    <select id="c_proto" class="form-select bg-dark text-light">
-                        <option value="vmess">VMess</option>
-                        <option value="vless">VLESS</option>
-                        <option value="trojan">Trojan</option>
-                        <option value="shadowsocks">Shadowsocks</option>
-                        <option value="http">HTTP Upgrade</option>
-                        <option value="socks">SOCKS5</option>
-                    </select>
-                </div>
-                <div class="mb-3">
-                    <label>Masa Aktif (Hari)</label>
-                    <input type="number" id="c_exp" class="form-control bg-dark text-light" value="30">
-                </div>
-                <div class="mb-3">
-                    <label>Kuota (GB, 0 = Unlimited)</label>
-                    <input type="number" id="c_quota" class="form-control bg-dark text-light" value="0">
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
-                <button type="button" class="btn btn-primary" onclick="submitCreate()">Buat</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<script>
-    // PERUBAHAN: Mengarah ke endpoint API Nginx, bukan file .php
-    const API_URL = 'api';
-
-    $(document).ready(function() {
-        loadAccounts();
-        
-        $('#search').on('keyup', filterTable);
-        $('#filterProto').on('change', filterTable);
-    });
-
-    function showLoading(show) {
-        $('#loading').css('display', show ? 'flex' : 'none');
-    }
-
-    function loadAccounts() {
-        showLoading(true);
-        $.post(API_URL, JSON.stringify({ action: 'list' }), function(res) {
-            showLoading(false);
-            if(res.status === 'success') {
-                renderTable(res.data);
-            } else {
-                console.error(res);
-                Swal.fire('Error', 'Gagal memuat data. Cek console.', 'error');
-            }
-        }, 'json').fail(() => { 
-            showLoading(false); 
-            Swal.fire('Error', 'Koneksi ke API gagal.', 'error');
-        });
-    }
-
-    let allAccounts = [];
-    function renderTable(data) {
-        allAccounts = data;
-        let html = '';
-        
-        if(data.length === 0) {
-            html = '<tr><td colspan="6" class="text-center text-muted">Tidak ada akun ditemukan</td></tr>';
-        } else {
-            data.forEach(acc => {
-                let statusBadge = acc.status === 'active' 
-                    ? '<span class="badge bg-success">Aktif</span>' 
-                    : '<span class="badge bg-danger">Nonaktif</span>';
-                
-                html += `<tr>
-                    <td>
-                        <div style="font-weight:bold; color: #fff; font-size: 1.1em;">${acc.user}</div>
-                        <div style="font-size:11px; color:#aaa;">Dibuat: ${acc.created}</div>
-                    </td>
-                    <td><span class="badge bg-primary text-uppercase">${acc.proto}</span></td>
-                    <td class="text-white">${acc.exp}</td>
-                    <td class="text-white" style="font-family:monospace;">${acc.quota}</td>
-                    <td>${statusBadge}</td>
-                    <td class="text-end">
-                        <div class="btn-group">
-                            <a href="accounts/${acc.proto}/${acc.user}.html" target="_blank" class="btn btn-sm btn-info" title="Detail">Info</a>
-                            <button class="btn btn-sm btn-warning" onclick="renewAccount('${acc.user}', '${acc.proto}')" title="Perpanjang">+Exp</button>
-                            <button class="btn btn-sm btn-danger" onclick="deleteAccount('${acc.user}', '${acc.proto}')" title="Hapus">X</button>
-                        </div>
-                    </td>
-                </tr>`;
-            });
-        }
-        $('#accTable').html(html);
-        filterTable();
-    }
-
-    function filterTable() {
-        let term = $('#search').val().toLowerCase();
-        let proto = $('#filterProto').val();
-        
-        $('#accTable tr').each(function() {
-            let text = $(this).text().toLowerCase();
-            let rowProto = $(this).find('.badge.bg-primary').text().toLowerCase();
-            
-            let matchSearch = text.includes(term);
-            let matchProto = proto === 'all' || rowProto === proto;
-
-            $(this).toggle(matchSearch && matchProto);
-        });
-    }
-
-    function openCreateModal() {
-        $('#createModal').modal('show');
-    }
-
-    function submitCreate() {
-        let user = $('#c_user').val();
-        let proto = $('#c_proto').val();
-        let exp = $('#c_exp').val();
-        let quota = $('#c_quota').val();
-
-        if(!user) return Swal.fire('Error', 'Username wajib diisi', 'warning');
-
-        $('#createModal').modal('hide');
-        showLoading(true);
-
-        $.post(API_URL, JSON.stringify({ 
-            action: 'create', user, proto, exp, quota 
-        }), function(res) {
-            showLoading(false);
-            if(res.status === 'success') {
-                Swal.fire('Sukses', res.message, 'success');
-                loadAccounts();
-                if(res.link) window.open(res.link, '_blank');
-            } else {
-                Swal.fire('Gagal', res.message, 'error');
-            }
-        }, 'json');
-    }
-
-    function deleteAccount(user, proto) {
-        Swal.fire({
-            title: 'Hapus Akun?',
-            text: `Yakin ingin menghapus ${user} (${proto})?`,
-            icon: 'warning',
-            showCancelButton: true,
-            confirmButtonColor: '#d33',
-            confirmButtonText: 'Ya, Hapus'
-        }).then((result) => {
-            if (result.isConfirmed) {
-                showLoading(true);
-                $.post(API_URL, JSON.stringify({ action: 'delete', user, proto }), function(res) {
-                    showLoading(false);
-                    if(res.status === 'success') {
-                        Swal.fire('Terhapus!', 'Akun berhasil dihapus.', 'success');
-                        loadAccounts();
-                    } else {
-                        Swal.fire('Gagal', res.message, 'error');
-                    }
-                }, 'json');
-            }
-        });
-    }
-
-    function renewAccount(user, proto) {
-        Swal.fire({
-            title: 'Perpanjang Akun',
-            input: 'number',
-            inputLabel: 'Masukkan jumlah hari',
-            inputValue: 30,
-            showCancelButton: true
-        }).then((result) => {
-            if (result.isConfirmed) {
-                showLoading(true);
-                $.post(API_URL, JSON.stringify({ action: 'renew', user, proto, days: result.value }), function(res) {
-                    showLoading(false);
-                    if(res.status === 'success') {
-                        Swal.fire('Sukses', 'Akun berhasil diperpanjang.', 'success');
-                        loadAccounts();
-                    } else {
-                        Swal.fire('Gagal', res.message, 'error');
-                    }
-                }, 'json');
-            }
-        });
-    }
-</script>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <p class="mt-4 text-secondary" style="font-size: 0.9rem;">
+      Detail tiap akun dapat diakses melalui URL:
+      <code>/panel/accounts/&lt;proto&gt;/&lt;username&gt;.html</code>
+    </p>
+  </div>
 </body>
 </html>
 EOF
+
 
     # Set Permission
     chown -R www-data:www-data /usr/local/etc/xray/webpanel
@@ -1463,27 +1112,14 @@ EOF
     # ========================================================
     print_info "Menulis konfigurasi Nginx Xray (xray.conf) dengan dukungan PHP..."
     
-    # Deteksi socket PHP (biasanya /run/php/php8.1-fpm.sock atau similar)
-    # Kita cari otomatisPHP_SOCK=""
-
-    if [[ -d /run/php ]]; then
-        PHP_SOCK=$(find /run/php -name "php*-fpm.sock" | head -n 1)
-    fi
-    
-    if [[ -z "$PHP_SOCK" ]]; then
-        PHP_SOCK="/run/php/php-fpm.sock"
-    fi
-    
-    echo "$PHP_SOCK" > /usr/local/etc/xray/php-fpm.sock
-    
-
+        # Konfigurasi Nginx Xray + Web Panel
     cat << EOF > /etc/nginx/conf.d/xray.conf
 map \$http_upgrade \$connection_upgrade {
     default upgrade;
     ''      close;
 }
 
-# (Upstreams section biarkan sama seperti sebelumnya...)
+# Upstream backend Xray (WS)
 upstream vmess_ws { server 127.0.0.1:${PORT_VMESS_WS}; keepalive 16; }
 upstream vless_ws { server 127.0.0.1:${PORT_VLESS_WS}; keepalive 16; }
 upstream trojan_ws { server 127.0.0.1:${PORT_TROJAN_WS}; keepalive 16; }
@@ -1495,9 +1131,9 @@ map \$uri \$xray_upstream {
     /${RANDOM_PATH_VMESS_WS}    vmess_ws;
     /${RANDOM_PATH_VLESS_WS}    vless_ws;
     /${RANDOM_PATH_TROJAN_WS}   trojan_ws;
-    /${RANDOM_PATH_HTTP_WS}       http_ws;
+    /${RANDOM_PATH_HTTP_WS}     http_ws;
     /${RANDOM_PATH_SHADOWSOCKS_WS}   shadowsocks_ws;
-    /${RANDOM_PATH_SOCKS_WS}   socks_ws;
+    /${RANDOM_PATH_SOCKS_WS}    socks_ws;
     default   vmess_ws;
 }
 
@@ -1505,9 +1141,9 @@ map \$uri \$xray_ws_path {
     /${RANDOM_PATH_VMESS_WS}    /vmess-ws;
     /${RANDOM_PATH_VLESS_WS}    /vless-ws;
     /${RANDOM_PATH_TROJAN_WS}   /trojan-ws;
-    /${RANDOM_PATH_HTTP_WS}       /http-ws;
+    /${RANDOM_PATH_HTTP_WS}     /http-ws;
     /${RANDOM_PATH_SHADOWSOCKS_WS}   /shadowsocks-ws;
-    /${RANDOM_PATH_SOCKS_WS}   /socks-ws;
+    /${RANDOM_PATH_SOCKS_WS}    /socks-ws;
     default   /vmess-ws;
 }
 
@@ -1528,7 +1164,7 @@ server {
     ssl_ciphers 'TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY_1305_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM_SHA384';
     ssl_prefer_server_ciphers on;
 
-    # Websocket Reverse Proxy (Biarkan sama)
+    # Websocket Reverse Proxy
     location ~ ^/(${RANDOM_PATH_VMESS_WS}|${RANDOM_PATH_VLESS_WS}|${RANDOM_PATH_TROJAN_WS}|${RANDOM_PATH_HTTP_WS}|${RANDOM_PATH_SHADOWSOCKS_WS}|${RANDOM_PATH_SOCKS_WS})$ {
         proxy_set_header Host   \$host;
         proxy_set_header Upgrade \$http_upgrade;
@@ -1543,25 +1179,19 @@ server {
         proxy_pass http://\$xray_upstream\$xray_ws_path;
     }
 
-    # WEB PANEL INTERAKTIF
+    # Web Panel (Front-end)
     location /panel/ {
         alias /usr/local/etc/xray/webpanel/;
-        index index.html index.php;
+        index index.html;
         try_files \$uri \$uri/ =404;
 
         auth_basic "Restricted Area: Admin Only";
         auth_basic_user_file /etc/nginx/.htpasswd;
-
-        # API Endpoint -> Proxy ke Python Service
-        location /panel/api {
-            proxy_pass http://127.0.0.1:10001;
-            proxy_set_header Host \$host;
-            proxy_set_header X-Real-IP \$remote_addr;
-        }
-
     }
+
 }
 EOF
+
     print_info "Semua file konfigurasi berhasil ditulis."
 }
 
@@ -1853,8 +1483,8 @@ main() {
     setup_wireproxy_config
     setup_wireproxy_service
     
-    print_header "Langkah 9: Pembuatan Konfigurasi Xray & Nginx"
-    generate_configs
+    print_header "Langkah 9: Setup Xray, Nginx & Web Panel"
+    setup_xray_nginx_and_panel
     
     print_header "Langkah 10: Menjalankan Layanan"
     start_services
@@ -1878,4 +1508,3 @@ main() {
 
 # Jalankan fungsi main
 main
-
